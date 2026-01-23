@@ -13,7 +13,7 @@ import { Button } from "../ui/button";
 import { Settings } from "lucide-react";
 import { useToast } from "../../contexts/toast";
 
-type APIProvider = "openai" | "gemini" | "anthropic";
+type APIProvider = "openai" | "gemini" | "anthropic" | "groq";
 
 type AIModel = {
   id: string;
@@ -28,9 +28,10 @@ type ModelCategory = {
   openaiModels: AIModel[];
   geminiModels: AIModel[];
   anthropicModels: AIModel[];
+  groqModels: AIModel[];
 };
 
-// Define available models for each category
+// ✅ UPDATED: Оптимизированные модели (январь 2026)
 const modelCategories: ModelCategory[] = [
   {
     key: 'extractionModel',
@@ -75,6 +76,13 @@ const modelCategories: ModelCategory[] = [
         id: "claude-3-opus-20240229",
         name: "Claude 3 Opus",
         description: "Top-level intelligence, fluency, and understanding"
+      }
+    ],
+    groqModels: [
+      {
+        id: "meta-llama/llama-4-scout-17b-16e-instruct",
+        name: "Llama 4 Scout 17B ⭐",
+        description: "Vision model for OCR, replaces Llama 3.2 (free)"
       }
     ]
   },
@@ -122,6 +130,33 @@ const modelCategories: ModelCategory[] = [
         name: "Claude 3 Opus",
         description: "Top-level intelligence, fluency, and understanding"
       }
+    ],
+    groqModels: [
+      {
+        id: "meta-llama/llama-4-maverick-17b-128e-instruct",
+        name: "Llama 4 Maverick 17B ⭐ RECOMMENDED",
+        description: "Best for coding! 128 experts, understands Stream API, patterns (free)"
+      },
+      {
+        id: "openai/gpt-oss-120b",
+        name: "GPT-OSS 120B",
+        description: "Large 120B param model by GroqLabs (free)"
+      },
+      {
+        id: "llama-3.3-70b-versatile",
+        name: "Llama 3.3 70B Versatile",
+        description: "General purpose, fast generation (free)"
+      },
+      {
+        id: "llama-3.1-70b-versatile",
+        name: "Llama 3.1 70B Versatile",
+        description: "Alternative versatile model"
+      },
+      {
+        id: "llama-3.1-8b-instant",
+        name: "Llama 3.1 8B Instant",
+        description: "Fast & lightweight, replaces Gemma"
+      }
     ]
   },
   {
@@ -168,6 +203,13 @@ const modelCategories: ModelCategory[] = [
         name: "Claude 3 Opus",
         description: "Top-level intelligence, fluency, and understanding"
       }
+    ],
+    groqModels: [
+      {
+        id: "meta-llama/llama-4-scout-17b-16e-instruct",
+        name: "Llama 4 Scout 17B ⭐",
+        description: "Vision model for analyzing error screenshots (free)"
+      }
     ]
   }
 ];
@@ -180,30 +222,26 @@ interface SettingsDialogProps {
 export function SettingsDialog({ open: externalOpen, onOpenChange }: SettingsDialogProps) {
   const [open, setOpen] = useState(externalOpen || false);
   const [apiKey, setApiKey] = useState("");
-  const [apiProvider, setApiProvider] = useState<APIProvider>("openai");
-  const [extractionModel, setExtractionModel] = useState("gpt-4o");
-  const [solutionModel, setSolutionModel] = useState("gpt-4o");
-  const [debuggingModel, setDebuggingModel] = useState("gpt-4o");
+  const [apiProvider, setApiProvider] = useState<APIProvider>("groq");
+  const [extractionModel, setExtractionModel] = useState("meta-llama/llama-4-scout-17b-16e-instruct");
+  const [solutionModel, setSolutionModel] = useState("meta-llama/llama-4-maverick-17b-128e-instruct"); // ⭐ ИЗМЕНЕНО
+  const [debuggingModel, setDebuggingModel] = useState("meta-llama/llama-4-scout-17b-16e-instruct");
   const [isLoading, setIsLoading] = useState(false);
   const { showToast } = useToast();
 
-  // Sync with external open state
   useEffect(() => {
     if (externalOpen !== undefined) {
       setOpen(externalOpen);
     }
   }, [externalOpen]);
 
-  // Handle open state changes
   const handleOpenChange = (newOpen: boolean) => {
     setOpen(newOpen);
-    // Only call onOpenChange when there's actually a change
     if (onOpenChange && newOpen !== externalOpen) {
       onOpenChange(newOpen);
     }
   };
-  
-  // Load current config on dialog open
+
   useEffect(() => {
     if (open) {
       setIsLoading(true);
@@ -219,10 +257,10 @@ export function SettingsDialog({ open: externalOpen, onOpenChange }: SettingsDia
         .getConfig()
         .then((config: Config) => {
           setApiKey(config.apiKey || "");
-          setApiProvider(config.apiProvider || "openai");
-          setExtractionModel(config.extractionModel || "gpt-4o");
-          setSolutionModel(config.solutionModel || "gpt-4o");
-          setDebuggingModel(config.debuggingModel || "gpt-4o");
+          setApiProvider(config.apiProvider || "groq");
+          setExtractionModel(config.extractionModel || "meta-llama/llama-4-scout-17b-16e-instruct");
+          setSolutionModel(config.solutionModel || "meta-llama/llama-4-maverick-17b-128e-instruct"); // ⭐ ИЗМЕНЕНО
+          setDebuggingModel(config.debuggingModel || "meta-llama/llama-4-scout-17b-16e-instruct");
         })
         .catch((error: unknown) => {
           console.error("Failed to load config:", error);
@@ -234,11 +272,8 @@ export function SettingsDialog({ open: externalOpen, onOpenChange }: SettingsDia
     }
   }, [open, showToast]);
 
-  // Handle API provider change
   const handleProviderChange = (provider: APIProvider) => {
     setApiProvider(provider);
-    
-    // Reset models to defaults when changing provider
     if (provider === "openai") {
       setExtractionModel("gpt-4o");
       setSolutionModel("gpt-4o");
@@ -251,6 +286,10 @@ export function SettingsDialog({ open: externalOpen, onOpenChange }: SettingsDia
       setExtractionModel("claude-3-7-sonnet-20250219");
       setSolutionModel("claude-3-7-sonnet-20250219");
       setDebuggingModel("claude-3-7-sonnet-20250219");
+    } else if (provider === "groq") {
+      setExtractionModel("meta-llama/llama-4-scout-17b-16e-instruct");
+      setSolutionModel("meta-llama/llama-4-maverick-17b-128e-instruct"); // ⭐ ИЗМЕНЕНО: Maverick по умолчанию
+      setDebuggingModel("meta-llama/llama-4-scout-17b-16e-instruct");
     }
   };
 
@@ -264,12 +303,10 @@ export function SettingsDialog({ open: externalOpen, onOpenChange }: SettingsDia
         solutionModel,
         debuggingModel,
       });
-      
+
       if (result) {
         showToast("Success", "Settings saved successfully", "success");
         handleOpenChange(false);
-        
-        // Force reload the app to apply the API key
         setTimeout(() => {
           window.location.reload();
         }, 1500);
@@ -282,280 +319,246 @@ export function SettingsDialog({ open: externalOpen, onOpenChange }: SettingsDia
     }
   };
 
-  // Mask API key for display
   const maskApiKey = (key: string) => {
     if (!key || key.length < 10) return "";
     return `${key.substring(0, 4)}...${key.substring(key.length - 4)}`;
   };
 
-  // Open external link handler
   const openExternalLink = (url: string) => {
     window.electronAPI.openLink(url);
   };
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
-      <DialogContent 
-        className="sm:max-w-md bg-black border border-white/10 text-white settings-dialog"
-        style={{
-          position: 'fixed',
-          top: '50%',
-          left: '50%',
-          transform: 'translate(-50%, -50%)',
-          width: 'min(450px, 90vw)',
-          height: 'auto',
-          minHeight: '400px',
-          maxHeight: '90vh',
-          overflowY: 'auto',
-          zIndex: 9999,
-          margin: 0,
-          padding: '20px',
-          transition: 'opacity 0.25s ease, transform 0.25s ease',
-          animation: 'fadeIn 0.25s ease forwards',
-          opacity: 0.98
-        }}
-      >        
+      <DialogTrigger asChild>
+        <button className="p-2 rounded-lg hover:bg-white/10 transition-colors">
+          <Settings className="h-5 w-5" />
+        </button>
+      </DialogTrigger>
+      <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto bg-zinc-900 text-white border-white/10">
         <DialogHeader>
           <DialogTitle>API Settings</DialogTitle>
-          <DialogDescription className="text-white/70">
+          <DialogDescription>
             Configure your API key and model preferences. You'll need your own API key to use this application.
           </DialogDescription>
         </DialogHeader>
-        <div className="space-y-4 py-4">
+
+        <div className="space-y-6">
           {/* API Provider Selection */}
-          <div className="space-y-2">
-            <label className="text-sm font-medium text-white">API Provider</label>
-            <div className="flex gap-2">
-              <div
-                className={`flex-1 p-2 rounded-lg cursor-pointer transition-colors ${
-                  apiProvider === "openai"
-                    ? "bg-white/10 border border-white/20"
-                    : "bg-black/30 border border-white/5 hover:bg-white/5"
+          <div className="space-y-3">
+            <label className="text-sm font-medium">API Provider</label>
+            <div className="grid grid-cols-2 gap-3">
+              <button
+                onClick={() => handleProviderChange("groq")}
+                className={`p-4 rounded-lg border-2 transition-all text-left ${
+                  apiProvider === "groq"
+                    ? "border-green-500 bg-green-500/10"
+                    : "border-white/10 hover:border-white/30"
                 }`}
+              >
+                <div className="font-semibold">Groq ⭐ FREE</div>
+                <div className="text-xs text-white/60">Llama 4 + GPT-OSS (14,400 RPD)</div>
+              </button>
+              <button
                 onClick={() => handleProviderChange("openai")}
-              >
-                <div className="flex items-center gap-2">
-                  <div
-                    className={`w-3 h-3 rounded-full ${
-                      apiProvider === "openai" ? "bg-white" : "bg-white/20"
-                    }`}
-                  />
-                  <div className="flex flex-col">
-                    <p className="font-medium text-white text-sm">OpenAI</p>
-                    <p className="text-xs text-white/60">GPT-4o models</p>
-                  </div>
-                </div>
-              </div>
-              <div
-                className={`flex-1 p-2 rounded-lg cursor-pointer transition-colors ${
-                  apiProvider === "gemini"
-                    ? "bg-white/10 border border-white/20"
-                    : "bg-black/30 border border-white/5 hover:bg-white/5"
+                className={`p-4 rounded-lg border-2 transition-all text-left ${
+                  apiProvider === "openai"
+                    ? "border-blue-500 bg-blue-500/10"
+                    : "border-white/10 hover:border-white/30"
                 }`}
+              >
+                <div className="font-semibold">OpenAI</div>
+                <div className="text-xs text-white/60">GPT-4o models</div>
+              </button>
+              <button
                 onClick={() => handleProviderChange("gemini")}
-              >
-                <div className="flex items-center gap-2">
-                  <div
-                    className={`w-3 h-3 rounded-full ${
-                      apiProvider === "gemini" ? "bg-white" : "bg-white/20"
-                    }`}
-                  />
-                  <div className="flex flex-col">
-                    <p className="font-medium text-white text-sm">Gemini</p>
-                    <p className="text-xs text-white/60">Gemini 1.5 models</p>
-                  </div>
-                </div>
-              </div>
-              <div
-                className={`flex-1 p-2 rounded-lg cursor-pointer transition-colors ${
-                  apiProvider === "anthropic"
-                    ? "bg-white/10 border border-white/20"
-                    : "bg-black/30 border border-white/5 hover:bg-white/5"
+                className={`p-4 rounded-lg border-2 transition-all text-left ${
+                  apiProvider === "gemini"
+                    ? "border-purple-500 bg-purple-500/10"
+                    : "border-white/10 hover:border-white/30"
                 }`}
-                onClick={() => handleProviderChange("anthropic")}
               >
-                <div className="flex items-center gap-2">
-                  <div
-                    className={`w-3 h-3 rounded-full ${
-                      apiProvider === "anthropic" ? "bg-white" : "bg-white/20"
-                    }`}
-                  />
-                  <div className="flex flex-col">
-                    <p className="font-medium text-white text-sm">Claude</p>
-                    <p className="text-xs text-white/60">Claude 3 models</p>
-                  </div>
-                </div>
-              </div>
+                <div className="font-semibold">Gemini</div>
+                <div className="text-xs text-white/60">Gemini 1.5 models</div>
+              </button>
+              <button
+                onClick={() => handleProviderChange("anthropic")}
+                className={`p-4 rounded-lg border-2 transition-all text-left ${
+                  apiProvider === "anthropic"
+                    ? "border-orange-500 bg-orange-500/10"
+                    : "border-white/10 hover:border-white/30"
+                }`}
+              >
+                <div className="font-semibold">Claude</div>
+                <div className="text-xs text-white/60">Claude 3 models</div>
+              </button>
             </div>
           </div>
-          
+
+          {/* API Key Input */}
           <div className="space-y-2">
-            <label className="text-sm font-medium text-white" htmlFor="apiKey">
-            {apiProvider === "openai" ? "OpenAI API Key" : 
-             apiProvider === "gemini" ? "Gemini API Key" : 
-             "Anthropic API Key"}
+            <label className="text-sm font-medium">
+              {apiProvider === "openai" ? "OpenAI API Key" :
+               apiProvider === "gemini" ? "Gemini API Key" :
+               apiProvider === "groq" ? "Groq API Key" :
+               "Anthropic API Key"}
             </label>
             <Input
-              id="apiKey"
               type="password"
               value={apiKey}
               onChange={(e) => setApiKey(e.target.value)}
               placeholder={
-                apiProvider === "openai" ? "sk-..." : 
-                apiProvider === "gemini" ? "Enter your Gemini API key" :
+                apiProvider === "openai" ? "sk-..." :
+                apiProvider === "gemini" ? "AIza..." :
+                apiProvider === "groq" ? "gsk_..." :
                 "sk-ant-..."
               }
               className="bg-black/50 border-white/10 text-white"
             />
             {apiKey && (
-              <p className="text-xs text-white/50">
+              <p className="text-xs text-white/60">
                 Current: {maskApiKey(apiKey)}
               </p>
             )}
-            <p className="text-xs text-white/50">
-              Your API key is stored locally and never sent to any server except {apiProvider === "openai" ? "OpenAI" : "Google"}
+            <p className="text-xs text-white/60">
+              Your API key is stored locally and never sent to any server except{" "}
+              {apiProvider === "openai" ? "OpenAI" :
+               apiProvider === "gemini" ? "Google" :
+               apiProvider === "groq" ? "Groq" :
+               "Anthropic"}
             </p>
-            <div className="mt-2 p-2 rounded-md bg-white/5 border border-white/10">
-              <p className="text-xs text-white/80 mb-1">Don't have an API key?</p>
+
+            {/* API Key Instructions */}
+            <div className="p-3 bg-white/5 rounded-lg text-xs space-y-1">
+              <p className="font-semibold">Don't have an API key?</p>
               {apiProvider === "openai" ? (
                 <>
-                  <p className="text-xs text-white/60 mb-1">1. Create an account at <button 
-                    onClick={() => openExternalLink('https://platform.openai.com/signup')} 
-                    className="text-blue-400 hover:underline cursor-pointer">OpenAI</button>
-                  </p>
-                  <p className="text-xs text-white/60 mb-1">2. Go to <button 
-                    onClick={() => openExternalLink('https://platform.openai.com/api-keys')} 
-                    className="text-blue-400 hover:underline cursor-pointer">API Keys</button> section
-                  </p>
-                  <p className="text-xs text-white/60">3. Create a new secret key and paste it here</p>
+                  <p>1. Create an account at <span onClick={() => openExternalLink('https://platform.openai.com/signup')} className="text-blue-400 hover:underline cursor-pointer">OpenAI</span></p>
+                  <p>2. Go to <span onClick={() => openExternalLink('https://platform.openai.com/api-keys')} className="text-blue-400 hover:underline cursor-pointer">API Keys section</span></p>
+                  <p>3. Create a new secret key and paste it here</p>
                 </>
-              ) : apiProvider === "gemini" ?  (
+              ) : apiProvider === "gemini" ? (
                 <>
-                  <p className="text-xs text-white/60 mb-1">1. Create an account at <button 
-                    onClick={() => openExternalLink('https://aistudio.google.com/')} 
-                    className="text-blue-400 hover:underline cursor-pointer">Google AI Studio</button>
-                  </p>
-                  <p className="text-xs text-white/60 mb-1">2. Go to the <button 
-                    onClick={() => openExternalLink('https://aistudio.google.com/app/apikey')} 
-                    className="text-blue-400 hover:underline cursor-pointer">API Keys</button> section
-                  </p>
-                  <p className="text-xs text-white/60">3. Create a new API key and paste it here</p>
+                  <p>1. Create an account at <span onClick={() => openExternalLink('https://aistudio.google.com/')} className="text-blue-400 hover:underline cursor-pointer">Google AI Studio</span></p>
+                  <p>2. Go to the <span onClick={() => openExternalLink('https://aistudio.google.com/app/apikey')} className="text-blue-400 hover:underline cursor-pointer">API Keys section</span></p>
+                  <p>3. Create a new API key and paste it here</p>
+                </>
+              ) : apiProvider === "groq" ? (
+                <>
+                  <p className="text-green-400 font-semibold">✅ FREE FOREVER - No credit card required!</p>
+                  <p>1. Create an account at <span onClick={() => openExternalLink('https://console.groq.com')} className="text-blue-400 hover:underline cursor-pointer">Groq Console</span></p>
+                  <p>2. Go to <span onClick={() => openExternalLink('https://console.groq.com/keys')} className="text-blue-400 hover:underline cursor-pointer">API Keys section</span></p>
+                  <p>3. Create a new API key (starts with gsk_) and paste it here</p>
+                  <p className="text-white/60">⚡ Limits: 30 requests/min, 14,400 requests/day (plenty for daily use!)</p>
                 </>
               ) : (
                 <>
-                  <p className="text-xs text-white/60 mb-1">1. Create an account at <button 
-                    onClick={() => openExternalLink('https://console.anthropic.com/signup')} 
-                    className="text-blue-400 hover:underline cursor-pointer">Anthropic</button>
-                  </p>
-                  <p className="text-xs text-white/60 mb-1">2. Go to the <button 
-                    onClick={() => openExternalLink('https://console.anthropic.com/settings/keys')} 
-                    className="text-blue-400 hover:underline cursor-pointer">API Keys</button> section
-                  </p>
-                  <p className="text-xs text-white/60">3. Create a new API key and paste it here</p>
+                  <p>1. Create an account at <span onClick={() => openExternalLink('https://console.anthropic.com/signup')} className="text-blue-400 hover:underline cursor-pointer">Anthropic</span></p>
+                  <p>2. Go to the <span onClick={() => openExternalLink('https://console.anthropic.com/settings/keys')} className="text-blue-400 hover:underline cursor-pointer">API Keys section</span></p>
+                  <p>3. Create a new API key and paste it here</p>
                 </>
               )}
             </div>
           </div>
-          
-          <div className="space-y-2 mt-4">
-            <label className="text-sm font-medium text-white mb-2 block">Keyboard Shortcuts</label>
-            <div className="bg-black/30 border border-white/10 rounded-lg p-3">
-              <div className="grid grid-cols-2 gap-y-2 text-xs">
-                <div className="text-white/70">Toggle Visibility</div>
-                <div className="text-white/90 font-mono">Ctrl+B / Cmd+B</div>
-                
-                <div className="text-white/70">Take Screenshot</div>
-                <div className="text-white/90 font-mono">Ctrl+H / Cmd+H</div>
-                
-                <div className="text-white/70">Process Screenshots</div>
-                <div className="text-white/90 font-mono">Ctrl+Enter / Cmd+Enter</div>
-                
-                <div className="text-white/70">Delete Last Screenshot</div>
-                <div className="text-white/90 font-mono">Ctrl+L / Cmd+L</div>
-                
-                <div className="text-white/70">Reset View</div>
-                <div className="text-white/90 font-mono">Ctrl+R / Cmd+R</div>
-                
-                <div className="text-white/70">Quit Application</div>
-                <div className="text-white/90 font-mono">Ctrl+Q / Cmd+Q</div>
-                
-                <div className="text-white/70">Move Window</div>
-                <div className="text-white/90 font-mono">Ctrl+Arrow Keys</div>
-                
-                <div className="text-white/70">Decrease Opacity</div>
-                <div className="text-white/90 font-mono">Ctrl+[ / Cmd+[</div>
-                
-                <div className="text-white/70">Increase Opacity</div>
-                <div className="text-white/90 font-mono">Ctrl+] / Cmd+]</div>
-                
-                <div className="text-white/70">Zoom Out</div>
-                <div className="text-white/90 font-mono">Ctrl+- / Cmd+-</div>
-                
-                <div className="text-white/70">Reset Zoom</div>
-                <div className="text-white/90 font-mono">Ctrl+0 / Cmd+0</div>
-                
-                <div className="text-white/70">Zoom In</div>
-                <div className="text-white/90 font-mono">Ctrl+= / Cmd+=</div>
+
+          {/* Keyboard Shortcuts */}
+          <div className="space-y-2">
+            <h3 className="text-sm font-medium">Keyboard Shortcuts</h3>
+            <div className="grid grid-cols-2 gap-2 text-xs">
+              <div className="flex justify-between p-2 bg-white/5 rounded">
+                <span>Toggle Visibility</span>
+                <span className="text-white/60">Ctrl+B / Cmd+B</span>
+              </div>
+              <div className="flex justify-between p-2 bg-white/5 rounded">
+                <span>Take Screenshot</span>
+                <span className="text-white/60">Ctrl+H / Cmd+H</span>
+              </div>
+              <div className="flex justify-between p-2 bg-white/5 rounded">
+                <span>Process Screenshots</span>
+                <span className="text-white/60">Ctrl+Enter / Cmd+Enter</span>
+              </div>
+              <div className="flex justify-between p-2 bg-white/5 rounded">
+                <span>Delete Last Screenshot</span>
+                <span className="text-white/60">Ctrl+L / Cmd+L</span>
+              </div>
+              <div className="flex justify-between p-2 bg-white/5 rounded">
+                <span>Reset View</span>
+                <span className="text-white/60">Ctrl+R / Cmd+R</span>
+              </div>
+              <div className="flex justify-between p-2 bg-white/5 rounded">
+                <span>Quit Application</span>
+                <span className="text-white/60">Ctrl+Q / Cmd+Q</span>
+              </div>
+              <div className="flex justify-between p-2 bg-white/5 rounded">
+                <span>Move Window</span>
+                <span className="text-white/60">Ctrl+Arrow Keys</span>
+              </div>
+              <div className="flex justify-between p-2 bg-white/5 rounded">
+                <span>Decrease Opacity</span>
+                <span className="text-white/60">Ctrl+[ / Cmd+[</span>
+              </div>
+              <div className="flex justify-between p-2 bg-white/5 rounded">
+                <span>Increase Opacity</span>
+                <span className="text-white/60">Ctrl+] / Cmd+]</span>
+              </div>
+              <div className="flex justify-between p-2 bg-white/5 rounded">
+                <span>Zoom Out</span>
+                <span className="text-white/60">Ctrl+- / Cmd+-</span>
+              </div>
+              <div className="flex justify-between p-2 bg-white/5 rounded">
+                <span>Reset Zoom</span>
+                <span className="text-white/60">Ctrl+0 / Cmd+0</span>
+              </div>
+              <div className="flex justify-between p-2 bg-white/5 rounded">
+                <span>Zoom In</span>
+                <span className="text-white/60">Ctrl+= / Cmd+=</span>
               </div>
             </div>
           </div>
-          
-          <div className="space-y-4 mt-4">
-            <label className="text-sm font-medium text-white">AI Model Selection</label>
-            <p className="text-xs text-white/60 -mt-3 mb-2">
-              Select which models to use for each stage of the process
-            </p>
-            
+
+          {/* AI Model Selection */}
+          <div className="space-y-4">
+            <h3 className="text-sm font-medium">AI Model Selection</h3>
+            <p className="text-xs text-white/60">Select which models to use for each stage of the process</p>
+
             {modelCategories.map((category) => {
-              // Get the appropriate model list based on selected provider
               const models = 
-                apiProvider === "openai" ? category.openaiModels : 
+                apiProvider === "openai" ? category.openaiModels :
                 apiProvider === "gemini" ? category.geminiModels :
+                apiProvider === "groq" ? category.groqModels :
                 category.anthropicModels;
-              
+
               return (
-                <div key={category.key} className="mb-4">
-                  <label className="text-sm font-medium text-white mb-1 block">
-                    {category.title}
-                  </label>
-                  <p className="text-xs text-white/60 mb-2">{category.description}</p>
-                  
+                <div key={category.key} className="space-y-2">
+                  <div>
+                    <h4 className="text-sm font-medium">{category.title}</h4>
+                    <p className="text-xs text-white/60">{category.description}</p>
+                  </div>
                   <div className="space-y-2">
                     {models.map((m) => {
-                      // Determine which state to use based on category key
                       const currentValue = 
                         category.key === 'extractionModel' ? extractionModel :
                         category.key === 'solutionModel' ? solutionModel :
                         debuggingModel;
-                      
-                      // Determine which setter function to use
+
                       const setValue = 
                         category.key === 'extractionModel' ? setExtractionModel :
                         category.key === 'solutionModel' ? setSolutionModel :
                         setDebuggingModel;
-                        
+
                       return (
-                        <div
+                        <button
                           key={m.id}
-                          className={`p-2 rounded-lg cursor-pointer transition-colors ${
-                            currentValue === m.id
-                              ? "bg-white/10 border border-white/20"
-                              : "bg-black/30 border border-white/5 hover:bg-white/5"
-                          }`}
                           onClick={() => setValue(m.id)}
+                          className={`w-full p-3 rounded-lg border-2 transition-all text-left ${
+                            currentValue === m.id
+                              ? "border-blue-500 bg-blue-500/10"
+                              : "border-white/10 hover:border-white/30"
+                          }`}
                         >
-                          <div className="flex items-center gap-2">
-                            <div
-                              className={`w-3 h-3 rounded-full ${
-                                currentValue === m.id ? "bg-white" : "bg-white/20"
-                              }`}
-                            />
-                            <div>
-                              <p className="font-medium text-white text-xs">{m.name}</p>
-                              <p className="text-xs text-white/60">{m.description}</p>
-                            </div>
-                          </div>
-                        </div>
+                          <div className="font-medium text-sm">{m.name}</div>
+                          <div className="text-xs text-white/60">{m.description}</div>
+                        </button>
                       );
                     })}
                   </div>
@@ -564,19 +567,16 @@ export function SettingsDialog({ open: externalOpen, onOpenChange }: SettingsDia
             })}
           </div>
         </div>
-        <DialogFooter className="flex justify-between sm:justify-between">
+
+        <DialogFooter>
           <Button
-            variant="outline"
             onClick={() => handleOpenChange(false)}
+            variant="outline"
             className="border-white/10 hover:bg-white/5 text-white"
           >
             Cancel
           </Button>
-          <Button
-            className="px-4 py-3 bg-white text-black rounded-xl font-medium hover:bg-white/90 transition-colors"
-            onClick={handleSave}
-            disabled={isLoading || !apiKey}
-          >
+          <Button onClick={handleSave} disabled={isLoading}>
             {isLoading ? "Saving..." : "Save Settings"}
           </Button>
         </DialogFooter>
