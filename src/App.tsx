@@ -86,20 +86,27 @@ function App() {
   // Check for OpenAI API key and prompt if not found
   useEffect(() => {
     const checkApiKey = async () => {
-      try {
-        const hasKey = await window.electronAPI.checkApiKey()
-        setHasApiKey(hasKey)
-        
-        // If no API key is found, show the settings dialog after a short delay
-        if (!hasKey) {
-          setTimeout(() => {
-            setIsSettingsOpen(true)
-          }, 1000)
-        }
-      } catch (error) {
-        console.error("Failed to check API key:", error)
-      }
+  try {
+    const config = await window.electronAPI.getConfig();
+    
+    // Для Ollama API ключ не нужен
+    if (config.apiProvider === "ollama") {
+      setHasApiKey(true); // Ollama не требует ключа
+      return;
     }
+    
+    const hasKey = await window.electronAPI.checkApiKey();
+    setHasApiKey(hasKey);
+    
+    if (!hasKey) {
+      setTimeout(() => {
+        setIsSettingsOpen(true);
+      }, 1000);
+    }
+  } catch (error) {
+    console.error("Failed to check API key:", error);
+  }
+};
     
     if (isInitialized) {
       checkApiKey()

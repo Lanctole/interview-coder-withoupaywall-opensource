@@ -52,6 +52,7 @@ export class ProcessingHelper {
   private geminiApiKey: string | null = null
   private anthropicClient: Anthropic | null = null
   private groqClient: OpenAI | null = null  // ✅ Groq uses OpenAI-compatible client
+  private ollamaClient: OpenAI | null = null
 
   // AbortControllers for API requests
   private currentProcessingAbortController: AbortController | null = null
@@ -82,8 +83,19 @@ export class ProcessingHelper {
       this.geminiApiKey = null;
       this.anthropicClient = null;
       this.groqClient = null;
+      this.ollamaClient = null;
 
-      if (config.apiProvider === "openai") {
+       if (config.apiProvider === "ollama") {
+        // Ollama использует OpenAI-compatible API
+        const baseUrl = config.ollamaBaseUrl || "http://localhost:11434";
+        this.ollamaClient = new OpenAI({
+          apiKey: "ollama", // Ollama не требует ключа, но библиотека требует строку
+          baseURL: `${baseUrl}/v1`,
+          timeout: 120000, // Ollama медленнее на CPU
+          maxRetries: 1
+        });
+        console.log("Ollama client initialized successfully at", baseUrl);
+      } else if (config.apiProvider === "openai") {
         if (config.apiKey) {
           this.openaiClient = new OpenAI({ 
             apiKey: config.apiKey,
@@ -196,6 +208,13 @@ export class ProcessingHelper {
     if (!mainWindow) return
 
     const config = configHelper.loadConfig();
+     if (config.apiProvider === "ollama" && !this.ollamaClient) {
+    this.initializeAIClient();
+    if (!this.ollamaClient) {
+      mainWindow.webContents.send(this.deps.PROCESSING_EVENTS.API_KEY_INVALID);
+      return;
+    }
+  }
 
     // ✅ Verify we have a valid AI client for the selected provider
     if (config.apiProvider === "openai" && !this.openaiClient) {
@@ -399,7 +418,46 @@ export class ProcessingHelper {
       }
     }
   }
+ private async callOllama(baseUrl: string, model: string, messages: any[], signal: AbortSignal) {
+  const url = `${baseUrl}/api/chat`;
+  console.log("POST to:", url);
+  
+  const body = {
+    model: model,
+    messages: messages,
+    stream: false,
+    options: {
+      temperature: 0.2,
+      num_predict: 4000
+    }
+  };
+  
+  console.log("Request body preview:", JSON.stringify(body).substring(0, 200));
 
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+    signal
+  });
+
+  console.log("Response status:", response.status);
+
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`HTTP ${response.status}: ${text}`);
+  }
+
+  const responseText = await response.text();
+  console.log("Raw response:", responseText.substring(0, 300));
+  
+  if (!responseText) {
+    throw new Error("Empty response from Ollama");
+  }
+
+  const data = JSON.parse(responseText);
+  return data.message?.content || "";
+}
   private async processScreenshotsHelper(
     screenshots: Array<{ path: string; data: string }>,
     signal: AbortSignal
@@ -419,8 +477,63 @@ export class ProcessingHelper {
       }
 
       let problemInfo;
+     if (config.apiProvider === "ollama") {
+  const baseUrl = config.ollamaBaseUrl || "http://localhost:11434";
+  
+  // Исправляем модель если нужно
+  let model = config.extractionModel || "qwen3-vl:235b-cloud";
+  if (model === "qwen3-vl:4b") {
+    model = "qwen3-vl:235b-cloud";
+  }
+  
+  try {
+    console.log("=== OLLAMA CONNECTION TEST ===");
+    console.log("Base URL:", baseUrl);
+    console.log("Model:", model);
+    
+    // ТЕСТ 1: Простой текстовый запрос (без изображений)
+    console.log("Sending test text query: 'реши задачу 22*5'");
+    const testMessages = [
+      {
+        role: "user",
+        content: "реши задачу 22*5"
+      }
+    ];
+    
+    const testResponse = await this.callOllama(baseUrl, model, testMessages, signal);
+    console.log("✅ Ollama text response:", testResponse);
+    console.log("=== TEST PASSED ===");
+    
+    // ТЕСТ 2: Теперь пробуем с изображением (если текст working)
+    console.log("Sending request WITH screenshot...");
+    const messages = [
+      {
+        role: "system",
+        content: "You are a coding challenge interpreter. Analyze the screenshot and return JSON with fields: problem_statement, constraints, example_input, example_output."
+      },
+      {
+        role: "user",
+        content: `Extract coding problem details. Language: ${language}.`,
+        images: imageDataList // base64 картинки
+      }
+    ];
 
-      if (config.apiProvider === "openai") {
+    const responseText = await this.callOllama(baseUrl, model, messages, signal);
+    console.log("Ollama vision response:", responseText.substring(0, 500));
+    
+    const jsonText = responseText.replace(/```json|```/g, '').trim();
+    problemInfo = JSON.parse(jsonText);
+    
+  } catch (error: any) {
+    console.error("=== OLLAMA ERROR ===");
+    console.error(error);
+    return {
+      success: false,
+      error: `Ollama test failed: ${error.message}. Check if Ollama is running: http://localhost:11434`
+    };
+  }
+}
+      else if (config.apiProvider === "openai") {
         if (!this.openaiClient) {
           this.initializeAIClient();
           if (!this.openaiClient) {
@@ -844,7 +957,37 @@ RULES:
 
       let responseContent;
 
-      if (config.apiProvider === "openai") {
+      if (config.apiProvider === "ollama") {
+        const baseUrl = config.ollamaBaseUrl || "http://localhost:11434";
+        
+        try {
+          const messages = [
+            {
+              role: "system",
+              content: "Expert coding assistant. Multi-task solver. Russian explanations."
+            },
+            {
+              role: "user",
+              content: promptText // promptText формируется выше как обычно
+            }
+          ];
+
+          console.log("Generating solution with Ollama:", config.solutionModel || "qwen3-coder:30b-a3b-q4_K_M");
+
+          responseContent = await this.callOllama(
+            baseUrl,
+            config.solutionModel || "qwen3-coder:30b-a3b-q4_K_M",
+            messages,
+            signal
+          );
+
+          console.log("Ollama solution generated, length:", responseContent?.length);
+        } catch (error: any) {
+          console.error("Error using Ollama for solution:", error);
+          return { success: false, error: `Ollama error: ${error.message}` };
+        }
+      }
+      else if (config.apiProvider === "openai") {
         if (!this.openaiClient) {
           return { success: false, error: "OpenAI API key not configured." };
         }
@@ -1099,6 +1242,33 @@ If you include code examples, use proper markdown code blocks with language spec
 3. Any optimizations that would make the solution better
 4. A clear explanation of the changes needed`;
 
+       if (config.apiProvider === "ollama") {
+        const baseUrl = config.ollamaBaseUrl || "http://localhost:11434";
+        
+        try {
+          const messages = [
+            {
+              role: "system",
+              content: debugSystemPrompt
+            },
+            {
+              role: "user",
+              content: debugUserPrompt,
+              images: screenshots.map(s => s.data) // Для vision моделей
+            }
+          ];
+
+          debugContent = await this.callOllama(
+            baseUrl,
+            config.debuggingModel || "qwen3-vl:235b-cloud",
+            messages,
+            signal
+          );
+        } catch (error: any) {
+          console.error("Error using Ollama for debug:", error);
+          return { success: false, error: `Ollama debug error: ${error.message}` };
+        }
+      } else
       if (config.apiProvider === "openai") {
         if (!this.openaiClient) {
           return {

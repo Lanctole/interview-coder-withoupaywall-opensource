@@ -6,10 +6,11 @@ import { OpenAI } from "openai";
 
 interface Config {
   apiKey: string;
-  apiProvider: "openai" | "gemini" | "anthropic" | "groq";
+  apiProvider: "openai" | "gemini" | "anthropic" | "groq" | "ollama";
   extractionModel: string;
   solutionModel: string;
   debuggingModel: string;
+  ollamaBaseUrl?: string;
   language: string;
   opacity: number;
 }
@@ -18,11 +19,12 @@ export class ConfigHelper extends EventEmitter {
   private configPath: string;
   private defaultConfig: Config = {
     apiKey: "",
-    apiProvider: "groq",
-    extractionModel: "meta-llama/llama-4-scout-17b-16e-instruct", // ✅ Vision для OCR
-    solutionModel: "meta-llama/llama-4-maverick-17b-128e-instruct", // ⭐ ИЗМЕНЕНО: Maverick для кода
-    debuggingModel: "meta-llama/llama-4-scout-17b-16e-instruct", // ✅ Vision для анализа
-    language: "python",
+    apiProvider: "ollama",
+    extractionModel: "qwen3-vl:4b",
+    solutionModel: "qwen3-coder:30b-a3b-q4_K_M",
+    debuggingModel: "qwen3-vl:4b",
+    ollamaBaseUrl: "http://localhost:11434",
+    language: "java", // Java по умолчанию
     opacity: 1.0
   };
 
@@ -48,7 +50,14 @@ export class ConfigHelper extends EventEmitter {
     }
   }
 
-  private sanitizeModelSelection(model: string, provider: "openai" | "gemini" | "anthropic" | "groq"): string {
+  private sanitizeModelSelection(model: string, provider: "openai" | "gemini" | "anthropic" | "groq" | "ollama"): string {
+    if (provider === "ollama") {
+      if (!model || model === "") {
+        return "qwen3-vl:4b";
+      }
+      return model;
+    }
+    
     if (provider === "openai") {
       const allowedModels = ['gpt-4o', 'gpt-4o-mini'];
       if (!allowedModels.includes(model)) {
@@ -71,29 +80,25 @@ export class ConfigHelper extends EventEmitter {
       }
       return model;
     } else if (provider === "groq") {
-      // ✅ UPDATED: Актуальные Groq модели (январь 2026)
       const allowedModels = [
-        // Vision models (Llama 4 Scout)
-        'meta-llama/llama-4-scout-17b-16e-instruct', // ⭐ Vision OCR
-        // Coding models (Llama 4 Maverick) - ПРИОРИТЕТ
-        'meta-llama/llama-4-maverick-17b-128e-instruct', // ⭐ Best for coding (128 experts)
-        // Text generation models
-        'llama-3.3-70b-versatile', // ⭐ General purpose
-        'llama-3.1-70b-versatile', // Alternative
-        'llama-3.1-8b-instant', // Fast & lightweight
-        'openai/gpt-oss-120b', // ⭐ Large 120B model
-        'openai/gpt-oss-20b', // Smaller variant
-        // Other models
-        'qwen/qwen3-32b', // General purpose
-        'moonshotai/kimi-k2-instruct-0905' // 256K context
+        'meta-llama/llama-4-scout-17b-16e-instruct',
+        'meta-llama/llama-4-maverick-17b-128e-instruct',
+        'llama-3.3-70b-versatile',
+        'llama-3.1-70b-versatile',
+        'llama-3.1-8b-instant',
+        'openai/gpt-oss-120b',
+        'openai/gpt-oss-20b',
+        'qwen/qwen3-32b',
+        'moonshotai/kimi-k2-instruct-0905'
       ];
 
       if (!allowedModels.includes(model)) {
         console.warn(`Invalid Groq model specified: ${model}. Using default model: meta-llama/llama-4-maverick-17b-128e-instruct`);
-        return 'meta-llama/llama-4-maverick-17b-128e-instruct'; // ⭐ ИЗМЕНЕНО: Maverick по умолчанию
+        return 'meta-llama/llama-4-maverick-17b-128e-instruct';
       }
       return model;
     }
+    
     return model;
   }
 
@@ -103,10 +108,21 @@ export class ConfigHelper extends EventEmitter {
         const configData = fs.readFileSync(this.configPath, 'utf8');
         const config = JSON.parse(configData);
 
-        // Validate provider
+        // КРИТИЧЕСКИЙ ФИКС: Добавлен "ollama" в проверку!
         if (config.apiProvider !== "openai" && config.apiProvider !== "gemini" && 
-            config.apiProvider !== "anthropic" && config.apiProvider !== "groq") {
-          config.apiProvider = "groq";
+            config.apiProvider !== "anthropic" && config.apiProvider !== "groq" && 
+            config.apiProvider !== "ollama") {
+          console.log("Invalid provider in config, resetting to ollama");
+          config.apiProvider = "ollama";
+        }
+
+        // Если провайдер ollama, но модели от другого провайдера - сбрасываем
+        if (config.apiProvider === "ollama") {
+          const ollamaModels = ["qwen3-vl:4b", "qwen3-coder:30b-a3b-q4_K_M", "deepseek-coder:latest", "llama3.2:latest", "qwen3-coder:480b-cloud"];
+          if (config.extractionModel && !ollamaModels.some(m => config.extractionModel.includes(m.split(':')[0]))) {
+            console.log("Resetting extraction model to Ollama default");
+            config.extractionModel = "qwen3-vl:4b";
+          }
         }
 
         // Sanitize model selections
@@ -165,16 +181,25 @@ export class ConfigHelper extends EventEmitter {
         } else if (key.startsWith('AIza')) {
           provider = "gemini";
           console.log("Auto-detected Gemini API key format");
+        } else if (key === "" || key === "ollama") {
+          provider = "ollama";
+          console.log("Using Ollama as provider (no API key)");
         } else {
-          provider = "groq";
-          console.log("Using Groq as default provider");
+          provider = "ollama"; // Дефолт на Ollama если ключ не распознан
+          console.log("Unknown key format, defaulting to Ollama");
         }
         updates.apiProvider = provider;
       }
 
       // Set default models when switching providers
       if (updates.apiProvider && updates.apiProvider !== currentConfig.apiProvider) {
-        if (updates.apiProvider === "openai") {
+        if (updates.apiProvider === "ollama") {
+          updates.extractionModel = "qwen3-vl:4b";
+          updates.solutionModel = "qwen3-coder:30b-a3b-q4_K_M";
+          updates.debuggingModel = "qwen3-vl:4b";
+          updates.apiKey = ""; // Ollama не нужен ключ
+          updates.ollamaBaseUrl = updates.ollamaBaseUrl || "http://localhost:11434";
+        } else if (updates.apiProvider === "openai") {
           updates.extractionModel = "gpt-4o";
           updates.solutionModel = "gpt-4o";
           updates.debuggingModel = "gpt-4o";
@@ -183,7 +208,6 @@ export class ConfigHelper extends EventEmitter {
           updates.solutionModel = "claude-3-7-sonnet-20250219";
           updates.debuggingModel = "claude-3-7-sonnet-20250219";
         } else if (updates.apiProvider === "groq") {
-          // ⭐ ИЗМЕНЕНО: Maverick для Solution по умолчанию
           updates.extractionModel = "meta-llama/llama-4-scout-17b-16e-instruct";
           updates.solutionModel = "meta-llama/llama-4-maverick-17b-128e-instruct";
           updates.debuggingModel = "meta-llama/llama-4-scout-17b-16e-instruct";
@@ -208,7 +232,6 @@ export class ConfigHelper extends EventEmitter {
       const newConfig = { ...currentConfig, ...updates };
       this.saveConfig(newConfig);
 
-      // Emit event for config changes that affect processing
       if (updates.apiKey !== undefined || updates.apiProvider !== undefined ||
           updates.extractionModel !== undefined || updates.solutionModel !== undefined ||
           updates.debuggingModel !== undefined || updates.language !== undefined) {
@@ -222,12 +245,17 @@ export class ConfigHelper extends EventEmitter {
     }
   }
 
+  // КРИТИЧЕСКИЙ ФИКС: Для Ollama API ключ не нужен!
   public hasApiKey(): boolean {
     const config = this.loadConfig();
+    if (config.apiProvider === "ollama") {
+      return true; // Ollama не требует API ключа
+    }
     return !!config.apiKey && config.apiKey.trim().length > 0;
   }
 
-  public isValidApiKeyFormat(apiKey: string, provider?: "openai" | "gemini" | "anthropic" | "groq"): boolean {
+  // Обновлено для поддержки ollama
+  public isValidApiKeyFormat(apiKey: string, provider?: "openai" | "gemini" | "anthropic" | "groq" | "ollama"): boolean {
     const key = apiKey.trim();
 
     if (!provider) {
@@ -239,12 +267,16 @@ export class ConfigHelper extends EventEmitter {
         provider = "groq";
       } else if (key.startsWith('AIza')) {
         provider = "gemini";
+      } else if (key === "" || key === "ollama") {
+        return true; // Ollama valid without key
       } else {
-        provider = "groq";
+        return false;
       }
     }
 
-    if (provider === "openai") {
+    if (provider === "ollama") {
+      return true; // Ollama не требует ключа
+    } else if (provider === "openai") {
       return /^sk-[a-zA-Z0-9]{32,}$/.test(key);
     } else if (provider === "gemini") {
       return key.length >= 10 && key.startsWith('AIza');
@@ -267,16 +299,18 @@ export class ConfigHelper extends EventEmitter {
     this.updateConfig({ opacity: validOpacity });
   }
 
+  // ФИКС: Java по умолчанию, не Python
   public getLanguage(): string {
     const config = this.loadConfig();
-    return config.language || "python";
+    return config.language || "java"; // Было "python"
   }
 
   public setLanguage(language: string): void {
     this.updateConfig({ language });
   }
 
-  public async testApiKey(apiKey: string, provider?: "openai" | "gemini" | "anthropic" | "groq"): Promise<{valid: boolean, error?: string}> {
+  // Обновлено для поддержки ollama
+  public async testApiKey(apiKey: string, provider?: "openai" | "gemini" | "anthropic" | "groq" | "ollama"): Promise<{valid: boolean, error?: string}> {
     const key = apiKey.trim();
 
     if (!provider) {
@@ -288,12 +322,16 @@ export class ConfigHelper extends EventEmitter {
         provider = "groq";
       } else if (key.startsWith('AIza')) {
         provider = "gemini";
+      } else if (key === "" || key === "ollama") {
+        return { valid: true }; // Ollama всегда валиден
       } else {
-        provider = "groq";
+        return { valid: false, error: "Unknown API key format" };
       }
     }
 
-    if (provider === "openai") {
+    if (provider === "ollama") {
+      return { valid: true }; // Ollama не нужен ключ
+    } else if (provider === "openai") {
       return this.testOpenAIKey(apiKey);
     } else if (provider === "gemini") {
       return this.testGeminiKey(apiKey);
@@ -355,7 +393,7 @@ export class ConfigHelper extends EventEmitter {
     try {
       const groq = new OpenAI({
         apiKey: apiKey,
-        baseURL: "https://api.groq.com/openai/v1"
+        baseURL: "https://api.groq.com/openai/v1" // Убрал пробел в конце!
       });
       await groq.models.list();
       return { valid: true };
