@@ -66,41 +66,78 @@ export class OllamaProvider extends BaseProvider {
     }
   }
 
-  async chat(messages: Message[], model: string, options?: {
-    temperature?: number;
-    maxTokens?: number;
-  }): Promise<any> {
-    const ollamaMessages = messages.map(msg => ({
-      role: msg.role,
-      content: typeof msg.content === 'string' 
-        ? msg.content 
-        : JSON.stringify(msg.content)
-    }));
+ async chat(messages: Message[], model: string, options?: {
+  temperature?: number;
+  maxTokens?: number;
+}): Promise<any> {
+  const ollamaMessages = [];
 
-    const response = await fetch(`${this.baseUrl}/api/chat`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: model,
-        messages: ollamaMessages,
-        stream: false,
-        options: {
-          temperature: options?.temperature ?? 0.7,
-          num_predict: options?.maxTokens ?? 4096
+  for (const msg of messages) {
+    if (typeof msg.content === 'string') {
+      // Обычное текстовое сообщение
+      ollamaMessages.push({
+        role: msg.role,
+        content: msg.content,
+      });
+    } else if (Array.isArray(msg.content)) {
+      // Сообщение может содержать текст и изображения
+      let text = '';
+      const images: string[] = [];
+
+      for (const part of msg.content) {
+        if (part.type === 'text') {
+          text += part.text + ' ';
+        } else if (part.type === 'image_url') {
+          // Извлекаем чистый base64 (без префикса data:image/...;base64,)
+          const base64 = part.image_url.url.split(',')[1];
+          if (base64) images.push(base64);
+        } else if (part.type === 'image') {
+          // Ваш формат для Ollama (type: "image", image: base64Image)
+          images.push(part.image);
         }
-      })
-    });
+      }
 
-    if (!response.ok) {
-      throw new Error(`Ollama API error: ${response.status}`);
+      ollamaMessages.push({
+        role: msg.role,
+        content: text.trim(),
+        images: images.length > 0 ? images : undefined,
+      });
     }
-
-    const data = await response.json();
-    return {
-      content: data.message?.content || '',
-      usage: undefined
-    };
   }
+
+  const requestBody: any = {
+    model: model,
+    messages: ollamaMessages,
+    stream: false,
+    options: {
+      temperature: options?.temperature ?? 0.7,
+      num_predict: options?.maxTokens ?? 4096,
+    },
+  };
+
+  console.log(`[Ollama] Request to ${this.baseUrl}/api/chat with model ${model}`);
+  const start = Date.now();
+  const response = await fetch(`${this.baseUrl}/api/chat`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(requestBody),
+  });
+  const elapsed = Date.now() - start;
+  console.log(`[Ollama] Response received in ${elapsed} ms`);
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    console.error(`[Ollama] HTTP ${response.status}: ${errorText}`);
+    throw new Error(`Ollama API error: ${response.status}`);
+  }
+
+  const data = await response.json();
+  console.log(`[Ollama] Response content length: ${data.message?.content?.length || 0}`);
+  return {
+    content: data.message?.content || '',
+    usage: undefined,
+  };
+}
 
   public formatImageForProvider(base64Image: string): any {
     return {
@@ -121,4 +158,5 @@ export class OllamaProvider extends BaseProvider {
       }
     };
   }
+  
 }

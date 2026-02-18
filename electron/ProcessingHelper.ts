@@ -165,7 +165,7 @@ export class ProcessingHelper {
       })
 
       const problemInfo = await this.extractProblemInfo(screenshots, signal)
-
+      console.log(problemInfo)
       // Сохраняем извлечённую информацию
       this.deps.setProblemInfo(problemInfo)
 
@@ -352,10 +352,21 @@ Rules:
       { role: "user", content }
     ]
 
-    const response = await this.provider.chat(messages, this.config.extractionModel, {
-      temperature: 0.2,
-      maxTokens: 4000,
-    })
+    console.log(`[extractProblemInfo] Sending request to model: ${this.config.extractionModel}`);
+console.log(`[extractProblemInfo] Number of messages: ${messages.length}`);
+const startTime = Date.now();
+const response = await this.provider.chat(messages, this.config.extractionModel, {
+  temperature: 0.2,
+  maxTokens: 4000,
+});
+const elapsed = Date.now() - startTime;
+console.log(`[extractProblemInfo] Response received in ${elapsed} ms`);
+console.log(`[extractProblemInfo] Response content length: ${response?.content?.length}`);
+if (response?.content) {
+  console.log(`[extractProblemInfo] First 200 chars: ${response.content.substring(0, 200)}`);
+} else {
+  console.error(`[extractProblemInfo] Response content is empty or undefined`);
+}
 
     // Улучшенная обработка JSON с fallback
         console.log("Raw extraction response:", response.content)

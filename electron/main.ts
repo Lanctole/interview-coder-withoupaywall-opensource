@@ -389,7 +389,8 @@ async function createWindow(): Promise<void> {
   state.isWindowVisible = true
 
   // Set opacity based on user preferences
-  const savedOpacity = configHelper.getOpacity()
+  const config = configHelper.loadConfig();
+  const savedOpacity = config.opacity
   console.log(`Initial opacity from config: ${savedOpacity}`)
 
   state.mainWindow.showInactive()
@@ -650,9 +651,10 @@ async function initializeApp() {
     loadEnvVariables()
 
     // Ensure a configuration file exists
-    if (!configHelper.hasApiKey()) {
-      console.log("No API key found in configuration. User will need to set up.")
-    }
+   const config = configHelper.loadConfig();
+if (!config.apiKey && config.apiProvider !== 'ollama') {
+  console.log("No API key found for non-local provider. User will need to set up.");
+}
 
     initializeHelpers()
     initializeIpcHandlers({

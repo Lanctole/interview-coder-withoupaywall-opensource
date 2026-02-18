@@ -3,11 +3,26 @@ import { BaseProvider, ProviderConfig, Message, ModelInfo, ProviderInfo } from '
 import OpenAI from 'openai';
 
 interface OpenRouterModel {
-  id: string;
+ id: string;
   name: string;
   context_length: number;
-  architecture: { modality: string }; // например, "text+image"
+  architecture: { modality: string };
+  pricing?: {
+    prompt: string;
+    completion: string;
+  };
+  description?: string;// например, "text+image"
 }
+
+
+const ALLOWED_MODEL_IDS = new Set([
+  'google/gemma-3-27b-it:free',
+  'nvidia/nemotron-nano-12b-v2-vl:free',
+  'mistralai/mistral-small-3.1-24b-instruct:free',
+  'google/gemma-3-4b-it:free',
+  'google/gemma-3-12b-it:free',
+  'openrouter/free'
+]);
 
 export class OpenRouterProvider extends BaseProvider {
   private client: OpenAI;
@@ -30,23 +45,36 @@ export class OpenRouterProvider extends BaseProvider {
     return 'OpenRouter';
   }
 
-  async getAvailableModels(): Promise<ModelInfo[]> {
+ async getAvailableModels(): Promise<ModelInfo[]> {
     return this.fetchModelsWithCache(async () => {
       const response = await fetch(`${this.baseUrl}/models`);
       if (!response.ok) {
         throw new Error(`HTTP error ${response.status}`);
       }
       const data = await response.json();
-      return data.data.map((model: any) => ({
-        id: model.id,
-        name: model.name || model.id,
-        supportsVision: model.architecture?.modality === 'text+image' || 
-                        model.id.includes('vision') || 
-                        model.id.includes('claude-3') || 
-                        model.id.includes('gpt-4'),
-        contextLength: model.context_length,
-        description: model.description
-      }));
+      
+      // Фильтруем только те модели, которые есть в ALLOWED_MODEL_IDS
+      const allowedModels = data.data.filter((model: OpenRouterModel) =>
+        ALLOWED_MODEL_IDS.has(model.id)
+      );
+
+      return allowedModels.map((model: OpenRouterModel) => {
+        // Определяем поддержку vision более тщательно
+        const supportsVision =
+          model.architecture?.modality === 'text+image' ||
+          model.id.includes('vision') ||
+          model.id.includes('vl') ||          // для моделей с VL (vision-language)
+          model.id.includes('claude-3') ||
+          model.id.includes('gpt-4');
+
+        return {
+          id: model.id,
+          name: model.name || model.id,
+          supportsVision,
+          contextLength: model.context_length,
+          description: model.description
+        };
+      });
     });
   }
 

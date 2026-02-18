@@ -7,5 +7,7 @@ export interface AppConfig {
   solutionModel?: string;
   debuggingModel?: string;
   ollamaBaseUrl?: string;
+  language?: string;
+  opacity?: number;
   baseUrl?: string;
 }
