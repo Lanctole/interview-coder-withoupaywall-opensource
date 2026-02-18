@@ -5,6 +5,9 @@ import { randomBytes } from "crypto"
 import { IIpcHandlerDeps } from "./main"
 import { configHelper } from "./ConfigHelper"
 
+import { ProviderFactory } from "./ProviderFactory"
+import { ProviderConfig } from "./providers/BaseProvider"
+
 export function initializeIpcHandlers(deps: IIpcHandlerDeps): void {
   console.log("Initializing IPC handlers")
 
@@ -16,6 +19,30 @@ export function initializeIpcHandlers(deps: IIpcHandlerDeps): void {
   ipcMain.handle("update-config", (_event, updates) => {
     return configHelper.updateConfig(updates);
   })
+
+ipcMain.handle('get-provider-models', async (event, provider: string, apiKey?: string, baseUrl?: string) => {
+  try {
+    // Формируем конфиг для провайдера
+    const config: ProviderConfig = {
+      apiKey: apiKey || '',
+      baseUrl: baseUrl,
+      defaultModels: { extraction: '', solution: '', debugging: '' } // не используется для получения списка
+    };
+    
+    // Создаём экземпляр провайдера через фабрику
+    const providerInstance = ProviderFactory.createProvider(provider as any, config);
+    
+    // Получаем модели (метод должен быть асинхронным)
+    const models = await providerInstance.getAvailableModels();
+    
+    // Возвращаем модели в формате, ожидаемом SettingsDialog
+    // Предполагаем, что models — это массив объектов DynamicModelInfo
+    return models;
+  } catch (error) {
+    console.error(`Error getting models for provider ${provider}:`, error);
+    return []; // В случае ошибки возвращаем пустой массив
+  }
+});
 
   ipcMain.handle("check-api-key", () => {
     return configHelper.hasApiKey();
@@ -102,6 +129,9 @@ export function initializeIpcHandlers(deps: IIpcHandlerDeps): void {
     
     await deps.processingHelper?.processScreenshots()
   })
+ipcMain.handle('get-all-providers', async () => {
+  return await ProviderFactory.getAllProvidersWithDetails();
+});
 
   // Window dimension handlers
   ipcMain.handle(

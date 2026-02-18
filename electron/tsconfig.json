@@ -12,7 +12,10 @@
     "outDir": "../dist-electron",
     "moduleResolution": "node",
     "resolveJsonModule": true,
-    "allowSyntheticDefaultImports": true
+    "allowSyntheticDefaultImports": true,
+     "paths": {
+      "@shared/*": ["./shared/*"]
+    }
   },
   "include": ["*.ts", "ConfigHelper.ts", "../src/types/electron.d.ts"]
 }

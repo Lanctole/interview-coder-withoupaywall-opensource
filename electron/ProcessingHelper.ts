@@ -1,152 +1,74 @@
-// ProcessingHelper.ts
+// electron/ProcessingHelper.ts
 import fs from "node:fs"
 import path from "node:path"
 import { ScreenshotHelper } from "./ScreenshotHelper"
 import { IProcessingHelperDeps } from "./main"
 import * as axios from "axios"
 import { app, BrowserWindow, dialog } from "electron"
-import { OpenAI } from "openai"
 import { configHelper } from "./ConfigHelper"
-import Anthropic from '@anthropic-ai/sdk';
+import { ProviderFactory, ProviderType } from './ProviderFactory';
+import { BaseProvider, Message } from './providers/BaseProvider';
 
-// Interface for Gemini API requests
-interface GeminiMessage {
-  role: string;
-  parts: Array<{
-    text?: string;
-    inlineData?: {
-      mimeType: string;
-      data: string;
-    }
-  }>;
-}
-
-interface GeminiResponse {
-  candidates: Array<{
-    content: {
-      parts: Array<{
-        text: string;
-      }>;
-    };
-    finishReason: string;
-  }>;
-}
-
-interface AnthropicMessage {
-  role: 'user' | 'assistant';
-  content: Array<{
-    type: 'text' | 'image';
-    text?: string;
-    source?: {
-      type: 'base64';
-      media_type: string;
-      data: string;
-    };
-  }>;
+// Тип для конфигурации приложения (должен совпадать с используемым)
+interface AppConfig {
+  apiProvider: string;
+  apiKey: string;
+  extractionModel: string;
+  solutionModel: string;
+  debuggingModel: string;
+  ollamaBaseUrl?: string;
+  baseUrl?: string;
+  language?: string;
 }
 
 export class ProcessingHelper {
   private deps: IProcessingHelperDeps
   private screenshotHelper: ScreenshotHelper
-  private openaiClient: OpenAI | null = null
-  private geminiApiKey: string | null = null
-  private anthropicClient: Anthropic | null = null
-  private groqClient: OpenAI | null = null  // ✅ Groq uses OpenAI-compatible client
-  private ollamaClient: OpenAI | null = null
+  private provider: BaseProvider;
+  private config: AppConfig;
 
-  // AbortControllers for API requests
+  // AbortControllers для отмены запросов
   private currentProcessingAbortController: AbortController | null = null
   private currentExtraProcessingAbortController: AbortController | null = null
 
   constructor(deps: IProcessingHelperDeps) {
     this.deps = deps
     this.screenshotHelper = deps.getScreenshotHelper()
+    this.config = configHelper.loadConfig() as AppConfig
 
-    // Initialize AI client based on config
-    this.initializeAIClient();
+    // Инициализируем провайдера согласно конфигу
+    this.initializeProvider()
 
-    // Listen for config changes to re-initialize the AI client
-    configHelper.on('config-updated', () => {
-      this.initializeAIClient();
-    });
+    // Слушаем изменения конфига
+    configHelper.on('config-updated', (newConfig: AppConfig) => {
+      this.config = newConfig
+      this.initializeProvider()
+    })
   }
 
   /**
-   * Initialize or reinitialize the AI client with current config
+   * Создаёт или обновляет экземпляр провайдера на основе текущей конфигурации
    */
-  private initializeAIClient(): void {
-    try {
-      const config = configHelper.loadConfig();
-
-      // Reset all clients first
-      this.openaiClient = null;
-      this.geminiApiKey = null;
-      this.anthropicClient = null;
-      this.groqClient = null;
-      this.ollamaClient = null;
-
-       if (config.apiProvider === "ollama") {
-        // Ollama использует OpenAI-compatible API
-        const baseUrl = config.ollamaBaseUrl || "http://localhost:11434";
-        this.ollamaClient = new OpenAI({
-          apiKey: "ollama", // Ollama не требует ключа, но библиотека требует строку
-          baseURL: `${baseUrl}/v1`,
-          timeout: 120000, // Ollama медленнее на CPU
-          maxRetries: 1
-        });
-        console.log("Ollama client initialized successfully at", baseUrl);
-      } else if (config.apiProvider === "openai") {
-        if (config.apiKey) {
-          this.openaiClient = new OpenAI({ 
-            apiKey: config.apiKey,
-            timeout: 60000,
-            maxRetries: 2
-          });
-          console.log("OpenAI client initialized successfully");
-        } else {
-          console.warn("No API key available, OpenAI client not initialized");
-        }
-      } else if (config.apiProvider === "gemini") {
-        if (config.apiKey) {
-          this.geminiApiKey = config.apiKey;
-          console.log("Gemini API key set successfully");
-        } else {
-          console.warn("No API key available, Gemini client not initialized");
-        }
-      } else if (config.apiProvider === "anthropic") {
-        if (config.apiKey) {
-          this.anthropicClient = new Anthropic({
-            apiKey: config.apiKey,
-            timeout: 60000,
-            maxRetries: 2
-          });
-          console.log("Anthropic client initialized successfully");
-        } else {
-          console.warn("No API key available, Anthropic client not initialized");
-        }
-      } else if (config.apiProvider === "groq") {
-        // ✅ Groq initialization - uses OpenAI-compatible SDK
-        if (config.apiKey) {
-          this.groqClient = new OpenAI({
-            apiKey: config.apiKey,
-            baseURL: "https://api.groq.com/openai/v1",
-            timeout: 30000,  // Groq is faster, shorter timeout
-            maxRetries: 2
-          });
-          console.log("Groq client initialized successfully");
-        } else {
-          console.warn("No API key available, Groq client not initialized");
-        }
+  private initializeProvider(): void {
+    const providerConfig = {
+      apiKey: this.config.apiKey || '',
+      baseUrl: this.config.apiProvider === 'ollama' ? this.config.ollamaBaseUrl : this.config.baseUrl,
+      defaultModels: {
+        extraction: this.config.extractionModel,
+        solution: this.config.solutionModel,
+        debugging: this.config.debuggingModel,
       }
-    } catch (error) {
-      console.error("Failed to initialize AI client:", error);
-      this.openaiClient = null;
-      this.geminiApiKey = null;
-      this.anthropicClient = null;
-      this.groqClient = null;
     }
+
+    this.provider = ProviderFactory.createProvider(
+      this.config.apiProvider as ProviderType,
+      providerConfig
+    )
   }
 
+  /**
+   * Ожидание инициализации рендерера (для получения credits и языка)
+   */
   private async waitForInitialization(mainWindow: BrowserWindow): Promise<void> {
     let attempts = 0
     const maxAttempts = 50
@@ -177,9 +99,8 @@ export class ProcessingHelper {
 
   private async getLanguage(): Promise<string> {
     try {
-      const config = configHelper.loadConfig();
-      if (config.language) {
-        return config.language;
+      if (this.config.language) {
+        return this.config.language
       }
 
       const mainWindow = this.deps.getMainWindow()
@@ -203,663 +124,297 @@ export class ProcessingHelper {
     }
   }
 
-  public async processScreenshots(): Promise<void> {
-    const mainWindow = this.deps.getMainWindow()
-    if (!mainWindow) return
+  // ==================== Публичные методы ====================
 
-    const config = configHelper.loadConfig();
-     if (config.apiProvider === "ollama" && !this.ollamaClient) {
-    this.initializeAIClient();
-    if (!this.ollamaClient) {
-      mainWindow.webContents.send(this.deps.PROCESSING_EVENTS.API_KEY_INVALID);
-      return;
+  /**
+   * Основной метод обработки скриншотов (извлечение задачи + генерация решения)
+   */
+  public async processScreenshots(): Promise<void> {
+    // Создаём новый AbortController для этого процесса
+    this.cancelOngoingRequests() // отменяем предыдущие, если есть
+    this.currentProcessingAbortController = new AbortController()
+    const signal = this.currentProcessingAbortController.signal
+
+    try {
+      const mainWindow = this.deps.getMainWindow()
+      if (!mainWindow) return
+
+      // Получаем текущую очередь скриншотов
+      const queue = this.screenshotHelper.getScreenshotQueue()
+      if (queue.length === 0) {
+        mainWindow.webContents.send(this.deps.PROCESSING_EVENTS.NO_SCREENSHOTS)
+        return
+      }
+
+      // Проверяем API ключ (если требуется)
+      if (!await this.validateApiKey()) {
+        mainWindow.webContents.send(this.deps.PROCESSING_EVENTS.API_KEY_INVALID)
+        return
+      }
+
+      // Отправляем событие начала
+      mainWindow.webContents.send(this.deps.PROCESSING_EVENTS.INITIAL_START)
+
+      // Преобразуем пути в base64 данные
+      const screenshots = await this.loadScreenshotsData(queue)
+
+      // Этап 1: Извлечение задачи
+      mainWindow.webContents.send("processing-status", {
+        message: "Analyzing problem from screenshots...",
+        progress: 20
+      })
+
+      const problemInfo = await this.extractProblemInfo(screenshots, signal)
+
+      // Сохраняем извлечённую информацию
+      this.deps.setProblemInfo(problemInfo)
+
+      mainWindow.webContents.send(
+        this.deps.PROCESSING_EVENTS.PROBLEM_EXTRACTED,
+        problemInfo
+      )
+
+      mainWindow.webContents.send("processing-status", {
+        message: "Problem analyzed successfully. Preparing to generate solution...",
+        progress: 40
+      })
+
+      // Этап 2: Генерация решения
+      const solutionResult = await this.generateSolutionsHelper(signal)
+
+      if (solutionResult.success) {
+        // Очищаем очередь дополнительных скриншотов (если были)
+        this.screenshotHelper.clearExtraScreenshotQueue()
+
+        mainWindow.webContents.send("processing-status", {
+          message: "Solution generated successfully",
+          progress: 100
+        })
+
+        mainWindow.webContents.send(
+          this.deps.PROCESSING_EVENTS.SOLUTION_SUCCESS,
+          solutionResult.data
+        )
+      } else {
+        throw new Error(solutionResult.error || "Failed to generate solutions")
+      }
+    } catch (error: any) {
+      this.handleProcessingError(error, this.deps.PROCESSING_EVENTS.INITIAL_SOLUTION_ERROR)
+    } finally {
+      this.currentProcessingAbortController = null
     }
   }
 
-    // ✅ Verify we have a valid AI client for the selected provider
-    if (config.apiProvider === "openai" && !this.openaiClient) {
-      this.initializeAIClient();
-      if (!this.openaiClient) {
-        console.error("OpenAI client not initialized");
-        mainWindow.webContents.send(this.deps.PROCESSING_EVENTS.API_KEY_INVALID);
-        return;
-      }
-    } else if (config.apiProvider === "gemini" && !this.geminiApiKey) {
-      this.initializeAIClient();
-      if (!this.geminiApiKey) {
-        console.error("Gemini API key not initialized");
-        mainWindow.webContents.send(this.deps.PROCESSING_EVENTS.API_KEY_INVALID);
-        return;
-      }
-    } else if (config.apiProvider === "anthropic" && !this.anthropicClient) {
-      this.initializeAIClient();
-      if (!this.anthropicClient) {
-        console.error("Anthropic client not initialized");
-        mainWindow.webContents.send(this.deps.PROCESSING_EVENTS.API_KEY_INVALID);
-        return;
-      }
-    } else if (config.apiProvider === "groq" && !this.groqClient) {
-      // ✅ Check Groq client
-      this.initializeAIClient();
-      if (!this.groqClient) {
-        console.error("Groq client not initialized");
-        mainWindow.webContents.send(this.deps.PROCESSING_EVENTS.API_KEY_INVALID);
-        return;
-      }
-    }
+  /**
+   * Обработка дополнительных скриншотов (режим дебага)
+   */
+  public async processExtraScreenshots(): Promise<void> {
+    this.cancelOngoingRequests()
+    this.currentExtraProcessingAbortController = new AbortController()
+    const signal = this.currentExtraProcessingAbortController.signal
 
-    const view = this.deps.getView()
-    console.log("Processing screenshots in view:", view)
+    try {
+      const mainWindow = this.deps.getMainWindow()
+      if (!mainWindow) return
 
-    if (view === "queue") {
-      mainWindow.webContents.send(this.deps.PROCESSING_EVENTS.INITIAL_START)
-      const screenshotQueue = this.screenshotHelper.getScreenshotQueue()
-      console.log("Processing main queue screenshots:", screenshotQueue)
-
-      if (!screenshotQueue || screenshotQueue.length === 0) {
-        console.log("No screenshots found in queue");
-        mainWindow.webContents.send(this.deps.PROCESSING_EVENTS.NO_SCREENSHOTS);
-        return;
+      const extraQueue = this.screenshotHelper.getExtraScreenshotQueue()
+      if (extraQueue.length === 0) {
+        mainWindow.webContents.send(this.deps.PROCESSING_EVENTS.NO_SCREENSHOTS)
+        return
       }
 
-      const existingScreenshots = screenshotQueue.filter(path => fs.existsSync(path));
-      if (existingScreenshots.length === 0) {
-        console.log("Screenshot files don't exist on disk");
-        mainWindow.webContents.send(this.deps.PROCESSING_EVENTS.NO_SCREENSHOTS);
-        return;
-      }
-
-      try {
-        this.currentProcessingAbortController = new AbortController()
-        const { signal } = this.currentProcessingAbortController
-
-        const screenshots = await Promise.all(
-          existingScreenshots.map(async (path) => {
-            try {
-              return {
-                path,
-                preview: await this.screenshotHelper.getImagePreview(path),
-                data: fs.readFileSync(path).toString('base64')
-              };
-            } catch (err) {
-              console.error(`Error reading screenshot ${path}:`, err);
-              return null;
-            }
-          })
-        )
-
-        const validScreenshots = screenshots.filter(Boolean);
-
-        if (validScreenshots.length === 0) {
-          throw new Error("Failed to load screenshot data");
-        }
-
-        const result = await this.processScreenshotsHelper(validScreenshots, signal)
-
-        if (!result.success) {
-          console.log("Processing failed:", result.error)
-          if (result.error?.includes("API Key") || result.error?.includes("OpenAI") || 
-              result.error?.includes("Gemini") || result.error?.includes("Groq")) {
-            mainWindow.webContents.send(this.deps.PROCESSING_EVENTS.API_KEY_INVALID)
-          } else {
-            mainWindow.webContents.send(
-              this.deps.PROCESSING_EVENTS.INITIAL_SOLUTION_ERROR,
-              result.error
-            )
-          }
-          console.log("Resetting view to queue due to error")
-          this.deps.setView("queue")
-          return
-        }
-
-        console.log("Setting view to solutions after successful processing")
-        mainWindow.webContents.send(
-          this.deps.PROCESSING_EVENTS.SOLUTION_SUCCESS,
-          result.data
-        )
-        this.deps.setView("solutions")
-      } catch (error: any) {
-        mainWindow.webContents.send(
-          this.deps.PROCESSING_EVENTS.INITIAL_SOLUTION_ERROR,
-          error
-        )
-        console.error("Processing error:", error)
-        if (axios.isCancel(error)) {
-          mainWindow.webContents.send(
-            this.deps.PROCESSING_EVENTS.INITIAL_SOLUTION_ERROR,
-            "Processing was canceled by the user."
-          )
-        } else {
-          mainWindow.webContents.send(
-            this.deps.PROCESSING_EVENTS.INITIAL_SOLUTION_ERROR,
-            error.message || "Server error. Please try again."
-          )
-        }
-        console.log("Resetting view to queue due to error")
-        this.deps.setView("queue")
-      } finally {
-        this.currentProcessingAbortController = null
-      }
-    } else {
-      // view == 'solutions'
-      const extraScreenshotQueue = this.screenshotHelper.getExtraScreenshotQueue()
-      console.log("Processing extra queue screenshots:", extraScreenshotQueue)
-
-      if (!extraScreenshotQueue || extraScreenshotQueue.length === 0) {
-        console.log("No extra screenshots found in queue");
-        mainWindow.webContents.send(this.deps.PROCESSING_EVENTS.NO_SCREENSHOTS);
-        return;
-      }
-
-      const existingExtraScreenshots = extraScreenshotQueue.filter(path => fs.existsSync(path));
-      if (existingExtraScreenshots.length === 0) {
-        console.log("Extra screenshot files don't exist on disk");
-        mainWindow.webContents.send(this.deps.PROCESSING_EVENTS.NO_SCREENSHOTS);
-        return;
+      if (!await this.validateApiKey()) {
+        mainWindow.webContents.send(this.deps.PROCESSING_EVENTS.API_KEY_INVALID)
+        return
       }
 
       mainWindow.webContents.send(this.deps.PROCESSING_EVENTS.DEBUG_START)
 
-      this.currentExtraProcessingAbortController = new AbortController()
-      const { signal } = this.currentExtraProcessingAbortController
+      const screenshots = await this.loadScreenshotsData(extraQueue)
 
-      try {
-        const allPaths = [
-          ...this.screenshotHelper.getScreenshotQueue(),
-          ...existingExtraScreenshots
-        ];
+      const debugResult = await this.processDebugHelper(screenshots, signal)
 
-        const screenshots = await Promise.all(
-          allPaths.map(async (path) => {
-            try {
-              if (!fs.existsSync(path)) {
-                console.warn(`Screenshot file does not exist: ${path}`);
-                return null;
-              }
-              return {
-                path,
-                preview: await this.screenshotHelper.getImagePreview(path),
-                data: fs.readFileSync(path).toString('base64')
-              };
-            } catch (err) {
-              console.error(`Error reading screenshot ${path}:`, err);
-              return null;
-            }
-          })
+      if (debugResult.success) {
+        mainWindow.webContents.send(
+          this.deps.PROCESSING_EVENTS.DEBUG_SUCCESS,
+          debugResult.data
         )
+      } else {
+        throw new Error(debugResult.error || "Debug failed")
+      }
+    } catch (error: any) {
+      this.handleProcessingError(error, this.deps.PROCESSING_EVENTS.DEBUG_ERROR)
+    } finally {
+      this.currentExtraProcessingAbortController = null
+    }
+  }
 
-        const validScreenshots = screenshots.filter(Boolean);
+  /**
+   * Отмена всех текущих запросов
+   */
+  public cancelOngoingRequests(): void {
+    let wasCancelled = false
 
-        if (validScreenshots.length === 0) {
-          throw new Error("Failed to load screenshot data for debugging");
-        }
+    if (this.currentProcessingAbortController) {
+      this.currentProcessingAbortController.abort()
+      this.currentProcessingAbortController = null
+      wasCancelled = true
+    }
 
-        console.log("Combined screenshots for processing:", validScreenshots.map((s) => s.path))
+    if (this.currentExtraProcessingAbortController) {
+      this.currentExtraProcessingAbortController.abort()
+      this.currentExtraProcessingAbortController = null
+      wasCancelled = true
+    }
 
-        const result = await this.processExtraScreenshotsHelper(validScreenshots, signal)
+    this.deps.setHasDebugged(false)
+    this.deps.setProblemInfo(null)
 
-        if (result.success) {
-          this.deps.setHasDebugged(true)
-          mainWindow.webContents.send(this.deps.PROCESSING_EVENTS.DEBUG_SUCCESS, result.data)
-        } else {
-          mainWindow.webContents.send(this.deps.PROCESSING_EVENTS.DEBUG_ERROR, result.error)
-        }
-      } catch (error: any) {
-        if (axios.isCancel(error)) {
-          mainWindow.webContents.send(
-            this.deps.PROCESSING_EVENTS.DEBUG_ERROR,
-            "Extra processing was canceled by the user."
-          )
-        } else {
-          mainWindow.webContents.send(this.deps.PROCESSING_EVENTS.DEBUG_ERROR, error.message)
-        }
-      } finally {
-        this.currentExtraProcessingAbortController = null
+    const mainWindow = this.deps.getMainWindow()
+    if (wasCancelled && mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send(this.deps.PROCESSING_EVENTS.NO_SCREENSHOTS)
+    }
+  }
+
+  // ==================== Приватные вспомогательные методы ====================
+
+  /**
+   * Загружает изображения из файлов и возвращает массив с base64 данными
+   */
+  private async loadScreenshotsData(paths: string[]): Promise<Array<{ path: string; data: string }>> {
+    const screenshots: Array<{ path: string; data: string }> = []
+    for (const screenshotPath of paths) {
+      try {
+        const imageBuffer = fs.readFileSync(screenshotPath)
+        const base64Data = imageBuffer.toString('base64')
+        screenshots.push({ path: screenshotPath, data: base64Data })
+      } catch (error) {
+        console.error(`Failed to read screenshot ${screenshotPath}:`, error)
       }
     }
+    return screenshots
   }
- private async callOllama(baseUrl: string, model: string, messages: any[], signal: AbortSignal) {
-  const url = `${baseUrl}/api/chat`;
-  console.log("POST to:", url);
-  
-  const body = {
-    model: model,
-    messages: messages,
-    stream: false,
-    options: {
-      temperature: 0.2,
-      num_predict: 4000
+
+  /**
+   * Валидация API ключа (если провайдер его требует)
+   */
+  private async validateApiKey(): Promise<boolean> {
+    // Если провайдер не требует ключ (Ollama), считаем валидным
+    if (this.config.apiProvider === 'ollama') {
+      return true
     }
-  };
-  
-  console.log("Request body preview:", JSON.stringify(body).substring(0, 200));
-
-  const response = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-    signal
-  });
-
-  console.log("Response status:", response.status);
-
-  if (!response.ok) {
-    const text = await response.text();
-    throw new Error(`HTTP ${response.status}: ${text}`);
+    // Иначе проверяем через провайдера
+    try {
+      return await this.provider.validateApiKey()
+    } catch {
+      return false
+    }
   }
 
-  const responseText = await response.text();
-  console.log("Raw response:", responseText.substring(0, 300));
-  
-  if (!responseText) {
-    throw new Error("Empty response from Ollama");
-  }
-
-  const data = JSON.parse(responseText);
-  return data.message?.content || "";
-}
-  private async processScreenshotsHelper(
+  /**
+   * Извлечение задачи из скриншотов
+   */
+    /**
+   * Извлечение задачи из скриншотов
+   */
+  private async extractProblemInfo(
     screenshots: Array<{ path: string; data: string }>,
     signal: AbortSignal
-  ) {
-    try {
-      const config = configHelper.loadConfig();
-      const language = await this.getLanguage();
-      const mainWindow = this.deps.getMainWindow();
+  ): Promise<any> {
+    const language = await this.getLanguage()
+ const systemPrompt = `You are a coding challenge interpreter. Your task is to analyze screenshots and extract information in STRICT JSON format.
 
-      const imageDataList = screenshots.map(screenshot => screenshot.data);
+CRITICAL: Return ONLY valid JSON without any markdown formatting, code blocks, or explanatory text.
 
-      if (mainWindow) {
-        mainWindow.webContents.send("processing-status", {
-          message: "Analyzing problem from screenshots...",
-          progress: 20
-        });
-      }
-
-      let problemInfo;
-     if (config.apiProvider === "ollama") {
-  const baseUrl = config.ollamaBaseUrl || "http://localhost:11434";
-  
-  // Исправляем модель если нужно
-  let model = config.extractionModel || "qwen3-vl:235b-cloud";
-  if (model === "qwen3-vl:4b") {
-    model = "qwen3-vl:235b-cloud";
-  }
-  
-  try {
-    console.log("=== OLLAMA CONNECTION TEST ===");
-    console.log("Base URL:", baseUrl);
-    console.log("Model:", model);
-    
-    // ТЕСТ 1: Простой текстовый запрос (без изображений)
-    console.log("Sending test text query: 'реши задачу 22*5'");
-    const testMessages = [
-      {
-        role: "user",
-        content: "реши задачу 22*5"
-      }
-    ];
-    
-    const testResponse = await this.callOllama(baseUrl, model, testMessages, signal);
-    console.log("✅ Ollama text response:", testResponse);
-    console.log("=== TEST PASSED ===");
-    
-    // ТЕСТ 2: Теперь пробуем с изображением (если текст working)
-    console.log("Sending request WITH screenshot...");
-    const messages = [
-      {
-        role: "system",
-        content: "You are a coding challenge interpreter. Analyze the screenshot and return JSON with fields: problem_statement, constraints, example_input, example_output."
-      },
-      {
-        role: "user",
-        content: `Extract coding problem details. Language: ${language}.`,
-        images: imageDataList // base64 картинки
-      }
-    ];
-
-    const responseText = await this.callOllama(baseUrl, model, messages, signal);
-    console.log("Ollama vision response:", responseText.substring(0, 500));
-    
-    const jsonText = responseText.replace(/```json|```/g, '').trim();
-    problemInfo = JSON.parse(jsonText);
-    
-  } catch (error: any) {
-    console.error("=== OLLAMA ERROR ===");
-    console.error(error);
-    return {
-      success: false,
-      error: `Ollama test failed: ${error.message}. Check if Ollama is running: http://localhost:11434`
-    };
-  }
+Required JSON structure:
+{
+  "problem_statement": "full problem description here",
+  "constraints": "any constraints mentioned",
+  "example_input": "example input if provided",
+  "example_output": "example output if provided"
 }
-      else if (config.apiProvider === "openai") {
-        if (!this.openaiClient) {
-          this.initializeAIClient();
-          if (!this.openaiClient) {
-            return {
-              success: false,
-              error: "OpenAI API key not configured or invalid. Please check your settings."
-            };
-          }
-        }
 
-        const messages = [
-          {
-            role: "system" as const, 
-            content: "You are a coding challenge interpreter. Analyze the screenshot of the coding problem and extract all relevant information. Return the information in JSON format with these fields: problem_statement, constraints, example_input, example_output. Just return the structured JSON without any other text."
-          },
-          {
-            role: "user" as const,
-            content: [
-              {
-                type: "text" as const, 
-                text: `Extract the coding problem details from these screenshots. Return in JSON format. Preferred coding language we gonna use for this problem is ${language}.`
-              },
-              ...imageDataList.map(data => ({
-                type: "image_url" as const,
-                image_url: { url: `data:image/png;base64,${data}` }
-              }))
-            ]
-          }
-        ];
+Rules:
+- Return ONLY the JSON object
+- No markdown (no \`\`\`json)
+- No explanatory text before or after
+- Use empty string "" if field not found
+- Ensure valid JSON syntax`
+    const userPrompt = `Extract the coding problem details from these screenshots. Return in JSON format. Preferred coding language we gonna use for this problem is ${language}.`
 
-        const extractionResponse = await this.openaiClient.chat.completions.create({
-          model: config.extractionModel || "gpt-4o",
-          messages: messages,
-          max_tokens: 4000,
-          temperature: 0.2
-        });
+    const content: any[] = [{ type: "text", text: userPrompt }]
+    for (const screenshot of screenshots) {
+      content.push(this.provider.formatImageForProvider(screenshot.data))
+    }
 
-        try {
-          const responseText = extractionResponse.choices[0].message.content;
-          const jsonText = responseText.replace(/```json|```/g, '').trim();
-          problemInfo = JSON.parse(jsonText);
-        } catch (error) {
-          console.error("Error parsing OpenAI response:", error);
-          return {
-            success: false,
-            error: "Failed to parse problem information. Please try again or use clearer screenshots."
-          };
-        }
-      } else if (config.apiProvider === "gemini") {
-        if (!this.geminiApiKey) {
-          return {
-            success: false,
-            error: "Gemini API key not configured. Please check your settings."
-          };
-        }
+    const messages: Message[] = [
+      { role: "system", content: systemPrompt },
+      { role: "user", content }
+    ]
 
-        try {
-          const geminiMessages: GeminiMessage[] = [
-            {
-              role: "user",
-              parts: [
-                {
-                  text: `You are a coding challenge interpreter. Analyze the screenshots of the coding problem and extract all relevant information. Return the information in JSON format with these fields: problem_statement, constraints, example_input, example_output. Just return the structured JSON without any other text. Preferred coding language we gonna use for this problem is ${language}.`
-                },
-                ...imageDataList.map(data => ({
-                  inlineData: {
-                    mimeType: "image/png",
-                    data: data
-                  }
-                }))
-              ]
-            }
-          ];
+    const response = await this.provider.chat(messages, this.config.extractionModel, {
+      temperature: 0.2,
+      maxTokens: 4000,
+    })
 
-          const response = await axios.default.post(
-            `https://generativelanguage.googleapis.com/v1beta/models/${config.extractionModel || "gemini-2.0-flash"}:generateContent?key=${this.geminiApiKey}`,
-            {
-              contents: geminiMessages,
-              generationConfig: {
-                temperature: 0.2,
-                maxOutputTokens: 4000
-              }
-            },
-            { signal }
-          );
+    // Улучшенная обработка JSON с fallback
+        console.log("Raw extraction response:", response.content)
+    
+    return this.parseProblemInfoResponse(response.content)
+  }
 
-          const responseData = response.data as GeminiResponse;
+  /**
+   * Парсинг ответа с извлечением задачи (с обработкой ошибок)
+   */
+  private parseProblemInfoResponse(content: string): any {
+    // Очищаем от markdown code blocks
+    let cleaned = content.replace(/```json|```/g, '').trim()
+    
+    // Пытаемся найти JSON в ответе (модель может обернуть его в текст)
+    const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
+    if (jsonMatch) {
+      cleaned = jsonMatch[0];
+    }
 
-          if (!responseData.candidates || responseData.candidates.length === 0) {
-            throw new Error("Empty response from Gemini API");
-          }
-
-          const responseText = responseData.candidates[0].content.parts[0].text;
-          const jsonText = responseText.replace(/```json|```/g, '').trim();
-          problemInfo = JSON.parse(jsonText);
-        } catch (error) {
-          console.error("Error using Gemini API:", error);
-          return {
-            success: false,
-            error: "Failed to process with Gemini API. Please check your API key or try again later."
-          };
-        }
-      } else if (config.apiProvider === "anthropic") {
-        if (!this.anthropicClient) {
-          return {
-            success: false,
-            error: "Anthropic API key not configured. Please check your settings."
-          };
-        }
-
-        try {
-          const messages = [
-            {
-              role: "user" as const,
-              content: [
-                {
-                  type: "text" as const,
-                  text: `Extract the coding problem details from these screenshots. Return in JSON format with these fields: problem_statement, constraints, example_input, example_output. Preferred coding language is ${language}.`
-                },
-                ...imageDataList.map(data => ({
-                  type: "image" as const,
-                  source: {
-                    type: "base64" as const,
-                    media_type: "image/png" as const,
-                    data: data
-                  }
-                }))
-              ]
-            }
-          ];
-
-          const response = await this.anthropicClient.messages.create({
-            model: config.extractionModel || "claude-3-7-sonnet-20250219",
-            max_tokens: 4000,
-            messages: messages,
-            temperature: 0.2
-          });
-
-          const responseText = (response.content[0] as { type: 'text', text: string }).text;
-          const jsonText = responseText.replace(/```json|```/g, '').trim();
-          problemInfo = JSON.parse(jsonText);
-        } catch (error: any) {
-          console.error("Error using Anthropic API:", error);
-          if (error.status === 429) {
-            return {
-              success: false,
-              error: "Claude API rate limit exceeded. Please wait a few minutes before trying again."
-            };
-          } else if (error.status === 413 || (error.message && error.message.includes("token"))) {
-            return {
-              success: false,
-              error: "Your screenshots contain too much information for Claude. Switch to OpenAI, Gemini or Groq."
-            };
-          }
-          return {
-            success: false,
-            error: "Failed to process with Anthropic API. Please check your API key or try again later."
-          };
-        }
-      } else if (config.apiProvider === "groq") {
-        // ✅ GROQ VISION PROCESSING
-        if (!this.groqClient) {
-          this.initializeAIClient();
-          if (!this.groqClient) {
-            return {
-              success: false,
-              error: "Groq API key not configured. Get one at console.groq.com/keys"
-            };
-          }
-        }
-
-        try {
-          const messages = [
-            {
-              role: "system" as const,
-              content: "You are a coding challenge interpreter. Analyze the screenshot of the coding problem and extract all relevant information. Return the information in JSON format with these fields: problem_statement, constraints, example_input, example_output. Just return the structured JSON without any other text."
-            },
-            {
-              role: "user" as const,
-              content: [
-                {
-                  type: "text" as const,
-                  text: `Extract the coding problem details from these screenshots. Return in JSON format. Preferred coding language we gonna use for this problem is ${language}.`
-                },
-                ...imageDataList.map(data => ({
-                  type: "image_url" as const,
-                  image_url: { 
-                    url: `data:image/png;base64,${data}`,
-                    detail: "high" as const  // ✅ Better quality for code screenshots
-                  }
-                }))
-              ]
-            }
-          ];
-
-          console.log("Sending request to Groq Vision API...");
-
-          const extractionResponse = await this.groqClient.chat.completions.create({
-            model: config.extractionModel || "llama-3.2-90b-vision-preview",
-            messages: messages,
-            max_tokens: 4000,
-            temperature: 0.2
-          });
-
-          const responseText = extractionResponse.choices[0].message.content;
-          console.log("Groq Vision response received, length:", responseText?.length);
-
-          // Parse JSON from response
-          const jsonText = responseText.replace(/```json|```/g, '').trim();
-          problemInfo = JSON.parse(jsonText);
-
-          console.log("Problem extracted successfully via Groq");
-        } catch (error: any) {
-          console.error("Error using Groq API:", error);
-
-          // Specific error handling for Groq
-          if (error.status === 401) {
-            return {
-              success: false,
-              error: "Invalid Groq API key. Get one at console.groq.com/keys"
-            };
-          } else if (error.status === 429) {
-            return {
-              success: false,
-              error: "Groq rate limit exceeded. Free tier: 30 RPM, 14400 RPD. Wait and retry."
-            };
-          } else if (error.status === 413 || error.message?.includes("too large")) {
-            return {
-              success: false,
-              error: "Images too large for Groq. Try smaller screenshots or switch to Gemini."
-            };
-          }
-
-          return {
-            success: false,
-            error: `Failed to process with Groq API: ${error.message || 'Unknown error'}`
-          };
-        }
+    try {
+      console.log(cleaned)
+      return JSON.parse(cleaned)
+    } catch (parseError) {
+      console.warn("Failed to parse JSON response, using fallback extraction:", cleaned)
+      
+      // Fallback: создаем структуру из всего ответа как problem_statement
+      return {
+        problem_statement: cleaned,
+        constraints: "No specific constraints extracted",
+        example_input: "Not extracted",
+        example_output: "Not extracted",
+        _raw_response: content, // Сохраняем оригинал для дебага
+        _parse_error: true
       }
-
-      if (mainWindow) {
-        mainWindow.webContents.send("processing-status", {
-          message: "Problem analyzed successfully. Preparing to generate solution...",
-          progress: 40
-        });
-      }
-
-      this.deps.setProblemInfo(problemInfo);
-
-      if (mainWindow) {
-        mainWindow.webContents.send(
-          this.deps.PROCESSING_EVENTS.PROBLEM_EXTRACTED,
-          problemInfo
-        );
-
-        const solutionsResult = await this.generateSolutionsHelper(signal);
-        if (solutionsResult.success) {
-          this.screenshotHelper.clearExtraScreenshotQueue();
-
-          mainWindow.webContents.send("processing-status", {
-            message: "Solution generated successfully",
-            progress: 100
-          });
-
-          mainWindow.webContents.send(
-            this.deps.PROCESSING_EVENTS.SOLUTION_SUCCESS,
-            solutionsResult.data
-          );
-          return { success: true, data: solutionsResult.data };
-        } else {
-          throw new Error(solutionsResult.error || "Failed to generate solutions");
-        }
-      }
-
-      return { success: false, error: "Failed to process screenshots" };
-    } catch (error: any) {
-      if (axios.isCancel(error)) {
-        return {
-          success: false,
-          error: "Processing was canceled by the user."
-        };
-      }
-
-      if (error?.response?.status === 401) {
-        return {
-          success: false,
-          error: "Invalid API key. Please check your settings."
-        };
-      } else if (error?.response?.status === 429) {
-        return {
-          success: false,
-          error: "API rate limit exceeded. Please try again later."
-        };
-      } else if (error?.response?.status === 500) {
-        return {
-          success: false,
-          error: "Server error. Please try again later."
-        };
-      }
-
-      console.error("API Error Details:", error);
-      return { 
-        success: false, 
-        error: error.message || "Failed to process screenshots. Please try again." 
-      };
     }
   }
 
-  private async generateSolutionsHelper(signal: AbortSignal) {
+  /**
+   * Генерация решения на основе извлечённой задачи
+   */
+  private async generateSolutionsHelper(signal: AbortSignal): Promise<{ success: boolean; data?: any; error?: string }> {
     try {
-      const problemInfo = this.deps.getProblemInfo();
-      const language = await this.getLanguage();
-      const config = configHelper.loadConfig();
-      const mainWindow = this.deps.getMainWindow();
+      const problemInfo = this.deps.getProblemInfo()
+      const language = await this.getLanguage()
+      const mainWindow = this.deps.getMainWindow()
 
       if (!problemInfo) {
-        throw new Error("No problem info available");
+        throw new Error("No problem info available")
       }
 
       if (mainWindow) {
         mainWindow.webContents.send("processing-status", {
           message: "Генерируем решения для всех задач...",
           progress: 60
-        });
+        })
       }
 
+      // Формируем промпт (скопирован из оригинального кода)
       const promptText = `
 You are an expert coding interview assistant. Analyze ALL problems in the text and provide complete solutions for EACH ONE.
 
@@ -901,8 +456,9 @@ CRITICAL REQUIREMENTS:
 ## Задача N: [Title]
 
 ### Код
-${[language]}
+${'```' + language}
 [Solution - NO comments in code unless necessary if explained below]
+${'```'}
 
 **Key Insights:**
 - Insight 1 in RUSSIAN
@@ -953,268 +509,57 @@ RULES:
      
    - IF text contains clear algorithmic tasks:
      - SOLVE them as stated.
-`;
+`
 
-      let responseContent;
+      const messages: Message[] = [
+        { role: "system", content: "Expert coding assistant. Multi-task solver. Russian explanations." },
+        { role: "user", content: promptText }
+      ]
 
-      if (config.apiProvider === "ollama") {
-        const baseUrl = config.ollamaBaseUrl || "http://localhost:11434";
-        
-        try {
-          const messages = [
-            {
-              role: "system",
-              content: "Expert coding assistant. Multi-task solver. Russian explanations."
-            },
-            {
-              role: "user",
-              content: promptText // promptText формируется выше как обычно
-            }
-          ];
+      const response = await this.provider.chat(messages, this.config.solutionModel, {
+        temperature: 0.2,
+        maxTokens: 8000,
+        // signal
+      })
 
-          console.log("Generating solution with Ollama:", config.solutionModel || "qwen3-coder:30b-a3b-q4_K_M");
-
-          responseContent = await this.callOllama(
-            baseUrl,
-            config.solutionModel || "qwen3-coder:30b-a3b-q4_K_M",
-            messages,
-            signal
-          );
-
-          console.log("Ollama solution generated, length:", responseContent?.length);
-        } catch (error: any) {
-          console.error("Error using Ollama for solution:", error);
-          return { success: false, error: `Ollama error: ${error.message}` };
-        }
-      }
-      else if (config.apiProvider === "openai") {
-        if (!this.openaiClient) {
-          return { success: false, error: "OpenAI API key not configured." };
-        }
-
-        const solutionResponse = await this.openaiClient.chat.completions.create({
-          model: config.solutionModel || "gpt-4o",
-          messages: [
-            {
-              role: "system",
-              content: "Expert coding assistant. Multi-task solver. Russian explanations."
-            },
-            { role: "user", content: promptText }
-          ],
-          max_tokens: 8000,
-          temperature: 0.2
-        });
-        responseContent = solutionResponse.choices[0].message.content;
-      } else if (config.apiProvider === "gemini") {
-        if (!this.geminiApiKey) {
-          return { success: false, error: "Gemini API key not configured." };
-        }
-
-        try {
-          const geminiMessages = [
-            {
-              role: "user",
-              parts: [{ text: promptText }]
-            }
-          ];
-
-          const response = await axios.default.post(
-            `https://generativelanguage.googleapis.com/v1beta/models/${config.solutionModel || "gemini-2.0-flash"}:generateContent?key=${this.geminiApiKey}`,
-            {
-              contents: geminiMessages,
-              generationConfig: {
-                temperature: 0.2,
-                maxOutputTokens: 8000
-              }
-            },
-            { signal }
-          );
-
-          const responseData = response.data as GeminiResponse;
-          if (!responseData.candidates || responseData.candidates.length === 0) {
-            throw new Error("Empty response from Gemini API");
-          }
-          responseContent = responseData.candidates[0].content.parts[0].text;
-        } catch (error) {
-          console.error("Error using Gemini API for solution:", error);
-          return { success: false, error: "Failed to generate solution with Gemini API." };
-        }
-      } else if (config.apiProvider === "anthropic") {
-        if (!this.anthropicClient) {
-          return { success: false, error: "Anthropic API key not configured." };
-        }
-
-        try {
-          const messages = [
-            {
-              role: "user" as const,
-              content: [
-                {
-                  type: "text" as const,
-                  text: promptText
-                }
-              ]
-            }
-          ];
-
-          const response = await this.anthropicClient.messages.create({
-            model: config.solutionModel || "claude-3-7-sonnet-20250219",
-            max_tokens: 8000,
-            messages: messages,
-            temperature: 0.2
-          });
-          responseContent = (response.content[0] as { type: 'text', text: string }).text;
-        } catch (error: any) {
-          console.error("Error using Anthropic API for solution:", error);
-          if (error.status === 429) {
-            return { success: false, error: "Claude API rate limit exceeded." };
-          } else if (error.status === 413 || (error.message && error.message.includes("token"))) {
-            return { success: false, error: "Too much information for Claude. Switch to OpenAI, Gemini or Groq." };
-          }
-          return { success: false, error: "Failed to generate solution with Anthropic API." };
-        }
-      } else if (config.apiProvider === "groq") {
-        // ✅ GROQ SOLUTION GENERATION
-        if (!this.groqClient) {
-          return { success: false, error: "Groq API key not configured. Get one at console.groq.com/keys" };
-        }
-
-        try {
-          console.log("Generating solution with Groq...");
-
-          const solutionResponse = await this.groqClient.chat.completions.create({
-            model: config.solutionModel || "llama-3.3-70b-versatile",
-            messages: [
-              {
-                role: "system",
-                content: "Expert coding assistant. Multi-task solver. Russian explanations."
-              },
-              { role: "user", content: promptText }
-            ],
-            max_tokens: 8000,
-            temperature: 0.2
-          });
-
-          responseContent = solutionResponse.choices[0].message.content;
-          console.log("Groq solution generated, length:", responseContent?.length);
-        } catch (error: any) {
-          console.error("Error using Groq API for solution:", error);
-          if (error.status === 429) {
-            return { success: false, error: "Groq rate limit exceeded. Wait and retry." };
-          }
-          return { success: false, error: `Failed to generate solution with Groq API: ${error.message}` };
-        }
-      }
-
-      const solution = this.parseMultiTaskResponse(responseContent!);
-      return { success: true, data: solution };
+      const solution = this.parseMultiTaskResponse(response.content)
+      return { success: true, data: solution }
     } catch (error: any) {
       if (axios.isCancel(error)) {
-        return { success: false, error: "Processing was canceled." };
+        return { success: false, error: "Processing was canceled." }
       }
       if (error?.response?.status === 401) {
-        return { success: false, error: "Invalid API key." };
+        return { success: false, error: "Invalid API key." }
       } else if (error?.response?.status === 429) {
-        return { success: false, error: "API rate limit exceeded." };
+        return { success: false, error: "API rate limit exceeded." }
       }
-      console.error("Solution generation error:", error);
-      return { success: false, error: error.message || "Failed to generate solution" };
+      console.error("Solution generation error:", error)
+      return { success: false, error: error.message || "Failed to generate solution" }
     }
   }
 
-  // ✅ Parse multi-task response
-  private parseMultiTaskResponse(responseContent: string) {
-    console.log("📄 Parsing multi-task response...");
-
-    const codeMatches = [...responseContent.matchAll(/```(?:\w+)?\s*([\s\S]*?)```/g)];
-
-    const code = codeMatches.length > 1
-      ? codeMatches.map((match, i) => {
-          const taskTitle = `Задача ${i + 1}`;
-          return `// ========== ${taskTitle} ==========\n\n${match[1].trim()}`;
-        }).join('\n\n\n')
-      : (codeMatches.length === 1 ? `// ========== Задача 1 ==========\n\n${codeMatches[0][1].trim()}` : responseContent);
-
-    console.log("✅ Code extracted, length:", code.length);
-
-    const thoughtsPattern = /(?:Размышления|Thoughts):?\s*([\s\S]*?)(?=###|##|Временная|Time complexity|$)/gi;
-    const allThoughts = [...responseContent.matchAll(thoughtsPattern)];
-    const thoughts: string[] = [];
-
-    console.log(`🧠 Found ${allThoughts.length} thought section(s)`);
-
-    allThoughts.forEach((match, taskIndex) => {
-      if (match) {
-        const thoughtsText = match[1];
-        const bulletPoints = thoughtsText.match(/(?:^|\n)\s*(?:[-*•]|\d+\.)\s*(.*)/g);
-        if (bulletPoints) {
-          if (allThoughts.length > 1) {
-            thoughts.push(`**Задача ${taskIndex + 1}:**`);
-          }
-          bulletPoints.forEach(point => {
-            thoughts.push(point.replace(/^\s*(?:[-*•]|\d+\.)\s*/, '').trim());
-          });
-        } else {
-          const lines = thoughtsText.split('\n').map(l => l.trim()).filter(Boolean);
-          if (lines.length > 0) {
-            if (allThoughts.length > 1) {
-              thoughts.push(`**Задача ${taskIndex + 1}:**`);
-            }
-            thoughts.push(...lines);
-          }
-        }
-      }
-    });
-
-    const timeComplexityPattern = /(?:Временная сложность|Time complexity):?\s*([^\n]+(?:\n[^\n]+)*?)(?=\n\s*(?:Пространственная|Space complexity|###|##|---|$))/gi;
-    const spaceComplexityPattern = /(?:Пространственная сложность|Space complexity):?\s*([^\n]+(?:\n[^\n]+)*?)(?=\n\s*(?:###|##|---|Задача|$))/gi;
-
-    const timeComplexities = [...responseContent.matchAll(timeComplexityPattern)];
-    const spaceComplexities = [...responseContent.matchAll(spaceComplexityPattern)];
-
-    console.log(`⏱️ Found ${timeComplexities.length} time complexity section(s)`);
-    console.log(`💾 Found ${spaceComplexities.length} space complexity section(s)`);
-
-    const timeComplexity = timeComplexities.length > 1
-      ? timeComplexities.map((m, i) => `**Задача ${i + 1}:** ${m[1].trim()}`).join('\n\n')
-      : (timeComplexities.length === 1 ? `**Задача 1:** ${timeComplexities[0][1].trim()}` : "O(n) - Линейная сложность");
-
-    const spaceComplexity = spaceComplexities.length > 1
-      ? spaceComplexities.map((m, i) => `**Задача ${i + 1}:** ${m[1].trim()}`).join('\n\n')
-      : (spaceComplexities.length === 1 ? `**Задача 1:** ${spaceComplexities[0][1].trim()}` : "O(1) - Константная память");
-
-    return {
-      code,
-      thoughts: thoughts.length > 0 ? thoughts : ["Решение оптимизировано для читаемости и эффективности"],
-      time_complexity: timeComplexity,
-      space_complexity: spaceComplexity
-    };
-  }
-
-  private async processExtraScreenshotsHelper(
+  /**
+   * Обработка дебаг-режима
+   */
+  private async processDebugHelper(
     screenshots: Array<{ path: string; data: string }>,
     signal: AbortSignal
-  ) {
+  ): Promise<{ success: boolean; data?: any; error?: string }> {
     try {
-      const problemInfo = this.deps.getProblemInfo();
-      const language = await this.getLanguage();
-      const config = configHelper.loadConfig();
-      const mainWindow = this.deps.getMainWindow();
+      const problemInfo = this.deps.getProblemInfo()
+      const language = await this.getLanguage()
+      const mainWindow = this.deps.getMainWindow()
 
       if (!problemInfo) {
-        throw new Error("No problem info available");
+        throw new Error("No problem info available")
       }
 
       if (mainWindow) {
         mainWindow.webContents.send("processing-status", {
           message: "Processing debug screenshots...",
           progress: 30
-        });
+        })
       }
-
-      const imageDataList = screenshots.map(screenshot => screenshot.data);
-
-      let debugContent;
 
       const debugSystemPrompt = `You are a coding interview assistant helping debug and improve solutions. Analyze these screenshots which include either error messages, incorrect outputs, or test cases, and provide detailed debugging help.
 
@@ -1234,318 +579,177 @@ Here provide a clear explanation of why the changes are needed
 ### Key Points
 - Summary bullet points of the most important takeaways
 
-If you include code examples, use proper markdown code blocks with language specification (e.g. java).`;
+If you include code examples, use proper markdown code blocks with language specification (e.g. java).`
 
       const debugUserPrompt = `I'm solving this coding problem: "${problemInfo.problem_statement}" in ${language}. I need help with debugging or improving my solution. Here are screenshots of my code, the errors or test cases. Please provide a detailed analysis with:
 1. What issues you found in my code
 2. Specific improvements and corrections
 3. Any optimizations that would make the solution better
-4. A clear explanation of the changes needed`;
+4. A clear explanation of the changes needed`
 
-       if (config.apiProvider === "ollama") {
-        const baseUrl = config.ollamaBaseUrl || "http://localhost:11434";
-        
-        try {
-          const messages = [
-            {
-              role: "system",
-              content: debugSystemPrompt
-            },
-            {
-              role: "user",
-              content: debugUserPrompt,
-              images: screenshots.map(s => s.data) // Для vision моделей
-            }
-          ];
-
-          debugContent = await this.callOllama(
-            baseUrl,
-            config.debuggingModel || "qwen3-vl:235b-cloud",
-            messages,
-            signal
-          );
-        } catch (error: any) {
-          console.error("Error using Ollama for debug:", error);
-          return { success: false, error: `Ollama debug error: ${error.message}` };
-        }
-      } else
-      if (config.apiProvider === "openai") {
-        if (!this.openaiClient) {
-          return {
-            success: false,
-            error: "OpenAI API key not configured. Please check your settings."
-          };
-        }
-
-        const messages = [
-          { role: "system" as const, content: debugSystemPrompt },
-          {
-            role: "user" as const,
-            content: [
-              { type: "text" as const, text: debugUserPrompt },
-              ...imageDataList.map(data => ({
-                type: "image_url" as const,
-                image_url: { url: `data:image/png;base64,${data}` }
-              }))
-            ]
-          }
-        ];
-
-        if (mainWindow) {
-          mainWindow.webContents.send("processing-status", {
-            message: "Analyzing code and generating debug feedback...",
-            progress: 60
-          });
-        }
-
-        const debugResponse = await this.openaiClient.chat.completions.create({
-          model: config.debuggingModel || "gpt-4o",
-          messages: messages,
-          max_tokens: 4000,
-          temperature: 0.2
-        });
-
-        debugContent = debugResponse.choices[0].message.content;
-      } else if (config.apiProvider === "gemini") {
-        if (!this.geminiApiKey) {
-          return {
-            success: false,
-            error: "Gemini API key not configured. Please check your settings."
-          };
-        }
-
-        try {
-          const geminiMessages = [
-            {
-              role: "user",
-              parts: [
-                { text: `${debugSystemPrompt}\n\n${debugUserPrompt}` },
-                ...imageDataList.map(data => ({
-                  inlineData: {
-                    mimeType: "image/png",
-                    data: data
-                  }
-                }))
-              ]
-            }
-          ];
-
-          if (mainWindow) {
-            mainWindow.webContents.send("processing-status", {
-              message: "Analyzing code and generating debug feedback with Gemini...",
-              progress: 60
-            });
-          }
-
-          const response = await axios.default.post(
-            `https://generativelanguage.googleapis.com/v1beta/models/${config.debuggingModel || "gemini-2.0-flash"}:generateContent?key=${this.geminiApiKey}`,
-            {
-              contents: geminiMessages,
-              generationConfig: {
-                temperature: 0.2,
-                maxOutputTokens: 4000
-              }
-            },
-            { signal }
-          );
-
-          const responseData = response.data as GeminiResponse;
-
-          if (!responseData.candidates || responseData.candidates.length === 0) {
-            throw new Error("Empty response from Gemini API");
-          }
-
-          debugContent = responseData.candidates[0].content.parts[0].text;
-        } catch (error) {
-          console.error("Error using Gemini API for debugging:", error);
-          return {
-            success: false,
-            error: "Failed to process debug request with Gemini API. Please check your API key or try again later."
-          };
-        }
-      } else if (config.apiProvider === "anthropic") {
-        if (!this.anthropicClient) {
-          return {
-            success: false,
-            error: "Anthropic API key not configured. Please check your settings."
-          };
-        }
-
-        try {
-          const messages = [
-            {
-              role: "user" as const,
-              content: [
-                { type: "text" as const, text: `${debugSystemPrompt}\n\n${debugUserPrompt}` },
-                ...imageDataList.map(data => ({
-                  type: "image" as const,
-                  source: {
-                    type: "base64" as const,
-                    media_type: "image/png" as const, 
-                    data: data
-                  }
-                }))
-              ]
-            }
-          ];
-
-          if (mainWindow) {
-            mainWindow.webContents.send("processing-status", {
-              message: "Analyzing code and generating debug feedback with Claude...",
-              progress: 60
-            });
-          }
-
-          const response = await this.anthropicClient.messages.create({
-            model: config.debuggingModel || "claude-3-7-sonnet-20250219",
-            max_tokens: 4000,
-            messages: messages,
-            temperature: 0.2
-          });
-
-          debugContent = (response.content[0] as { type: 'text', text: string }).text;
-        } catch (error: any) {
-          console.error("Error using Anthropic API for debugging:", error);
-          if (error.status === 429) {
-            return {
-              success: false,
-              error: "Claude API rate limit exceeded. Please wait a few minutes before trying again."
-            };
-          } else if (error.status === 413 || (error.message && error.message.includes("token"))) {
-            return {
-              success: false,
-              error: "Your screenshots contain too much information for Claude. Switch to OpenAI, Gemini or Groq."
-            };
-          }
-          return {
-            success: false,
-            error: "Failed to process debug request with Anthropic API. Please check your API key or try again later."
-          };
-        }
-      } else if (config.apiProvider === "groq") {
-        // ✅ GROQ DEBUG PROCESSING
-        if (!this.groqClient) {
-          return {
-            success: false,
-            error: "Groq API key not configured. Get one at console.groq.com/keys"
-          };
-        }
-
-        try {
-          const messages = [
-            { role: "system" as const, content: debugSystemPrompt },
-            {
-              role: "user" as const,
-              content: [
-                { type: "text" as const, text: debugUserPrompt },
-                ...imageDataList.map(data => ({
-                  type: "image_url" as const,
-                  image_url: { 
-                    url: `data:image/png;base64,${data}`,
-                    detail: "high" as const
-                  }
-                }))
-              ]
-            }
-          ];
-
-          if (mainWindow) {
-            mainWindow.webContents.send("processing-status", {
-              message: "Analyzing code and generating debug feedback with Groq...",
-              progress: 60
-            });
-          }
-
-          console.log("Sending debug request to Groq Vision API...");
-
-          const debugResponse = await this.groqClient.chat.completions.create({
-            model: config.debuggingModel || "llama-3.2-90b-vision-preview",
-            messages: messages,
-            max_tokens: 4000,
-            temperature: 0.2
-          });
-
-          debugContent = debugResponse.choices[0].message.content;
-          console.log("Groq debug response received, length:", debugContent?.length);
-        } catch (error: any) {
-          console.error("Error using Groq API for debugging:", error);
-          if (error.status === 429) {
-            return {
-              success: false,
-              error: "Groq rate limit exceeded. Wait and retry."
-            };
-          }
-          return {
-            success: false,
-            error: `Failed to process debug request with Groq API: ${error.message}`
-          };
-        }
+      const content: any[] = [{ type: "text", text: debugUserPrompt }]
+      for (const screenshot of screenshots) {
+        content.push(this.provider.formatImageForProvider(screenshot.data))
       }
+
+      const messages: Message[] = [
+        { role: "system", content: debugSystemPrompt },
+        { role: "user", content }
+      ]
+
+      if (mainWindow) {
+        mainWindow.webContents.send("processing-status", {
+          message: "Analyzing code and generating debug feedback...",
+          progress: 60
+        })
+      }
+
+      const response = await this.provider.chat(messages, this.config.debuggingModel, {
+        temperature: 0.2,
+        maxTokens: 4000,
+        // signal
+      })
 
       if (mainWindow) {
         mainWindow.webContents.send("processing-status", {
           message: "Debug analysis complete",
           progress: 100
-        });
+        })
       }
 
-      let extractedCode = "// Debug mode - see analysis below";
-      const codeMatch = debugContent.match(/```(?:[a-zA-Z]+)?([\s\S]*?)```/);
+      // Парсим ответ (логика из оригинального кода)
+      let extractedCode = "// Debug mode - see analysis below"
+      const codeMatch = response.content.match(/```(?:[a-zA-Z]+)?([\s\S]*?)```/)
       if (codeMatch && codeMatch[1]) {
-        extractedCode = codeMatch[1].trim();
+        extractedCode = codeMatch[1].trim()
       }
 
-      let formattedDebugContent = debugContent;
+      let formattedDebugContent = response.content
 
-      if (!debugContent.includes('# ') && !debugContent.includes('## ')) {
-        formattedDebugContent = debugContent
+      if (!formattedDebugContent.includes('# ') && !formattedDebugContent.includes('## ')) {
+        formattedDebugContent = formattedDebugContent
           .replace(/issues identified|problems found|bugs found/i, '## Issues Identified')
           .replace(/code improvements|improvements|suggested changes/i, '## Code Improvements')
           .replace(/optimizations|performance improvements/i, '## Optimizations')
-          .replace(/explanation|detailed analysis/i, '## Explanation');
+          .replace(/explanation|detailed analysis/i, '## Explanation')
       }
 
-      const bulletPoints = formattedDebugContent.match(/(?:^|\n)[ ]*(?:[-*•]|\d+\.)[ ]+([^\n]+)/g);
+      const bulletPoints = formattedDebugContent.match(/(?:^|\n)[ ]*(?:[-*•]|\d+\.)[ ]+([^\n]+)/g)
       const thoughts = bulletPoints 
         ? bulletPoints.map(point => point.replace(/^[ ]*(?:[-*•]|\d+\.)[ ]+/, '').trim()).slice(0, 5)
-        : ["Debug analysis based on your screenshots"];
+        : ["Debug analysis based on your screenshots"]
 
-      const response = {
+      const result = {
         code: extractedCode,
         debug_analysis: formattedDebugContent,
         thoughts: thoughts,
         time_complexity: "N/A - Debug mode",
         space_complexity: "N/A - Debug mode"
-      };
+      }
 
-      return { success: true, data: response };
+      return { success: true, data: result }
     } catch (error: any) {
-      console.error("Debug processing error:", error);
-      return { success: false, error: error.message || "Failed to process debug request" };
+      console.error("Debug processing error:", error)
+      return { success: false, error: error.message || "Failed to process debug request" }
     }
   }
 
-  public cancelOngoingRequests(): void {
-    let wasCancelled = false
+  /**
+   * Парсинг мультизадачного ответа (из оригинального кода)
+   */
+  private parseMultiTaskResponse(responseContent: string) {
+    console.log("📄 Parsing multi-task response...")
 
-    if (this.currentProcessingAbortController) {
-      this.currentProcessingAbortController.abort()
-      this.currentProcessingAbortController = null
-      wasCancelled = true
+    const codeMatches = [...responseContent.matchAll(/```(?:\w+)?\s*([\s\S]*?)```/g)]
+
+    const code = codeMatches.length > 1
+      ? codeMatches.map((match, i) => {
+          const taskTitle = `Задача ${i + 1}`
+          return `// ========== ${taskTitle} ==========\n\n${match[1].trim()}`
+        }).join('\n\n\n')
+      : (codeMatches.length === 1 ? `// ========== Задача 1 ==========\n\n${codeMatches[0][1].trim()}` : responseContent)
+
+    console.log("✅ Code extracted, length:", code.length)
+
+    const thoughtsPattern = /(?:Размышления|Thoughts):?\s*([\s\S]*?)(?=###|##|Временная|Time complexity|$)/gi
+    const allThoughts = [...responseContent.matchAll(thoughtsPattern)]
+    const thoughts: string[] = []
+
+    console.log(`🧠 Found ${allThoughts.length} thought section(s)`)
+
+    allThoughts.forEach((match, taskIndex) => {
+      if (match) {
+        const thoughtsText = match[1]
+        const bulletPoints = thoughtsText.match(/(?:^|\n)\s*(?:[-*•]|\d+\.)\s*(.*)/g)
+        if (bulletPoints) {
+          if (allThoughts.length > 1) {
+            thoughts.push(`**Задача ${taskIndex + 1}:**`)
+          }
+          bulletPoints.forEach(point => {
+            thoughts.push(point.replace(/^\s*(?:[-*•]|\d+\.)\s*/, '').trim())
+          })
+        } else {
+          const lines = thoughtsText.split('\n').map(l => l.trim()).filter(Boolean)
+          if (lines.length > 0) {
+            if (allThoughts.length > 1) {
+              thoughts.push(`**Задача ${taskIndex + 1}:**`)
+            }
+            thoughts.push(...lines)
+          }
+        }
+      }
+    })
+
+    const timeComplexityPattern = /(?:Временная сложность|Time complexity):?\s*([^\n]+(?:\n[^\n]+)*?)(?=\n\s*(?:Пространственная|Space complexity|###|##|---|$))/gi
+    const spaceComplexityPattern = /(?:Пространственная сложность|Space complexity):?\s*([^\n]+(?:\n[^\n]+)*?)(?=\n\s*(?:###|##|---|Задача|$))/gi
+
+    const timeComplexities = [...responseContent.matchAll(timeComplexityPattern)]
+    const spaceComplexities = [...responseContent.matchAll(spaceComplexityPattern)]
+
+    console.log(`⏱️ Found ${timeComplexities.length} time complexity section(s)`)
+    console.log(`💾 Found ${spaceComplexities.length} space complexity section(s)`)
+
+    const timeComplexity = timeComplexities.length > 1
+      ? timeComplexities.map((m, i) => `**Задача ${i + 1}:** ${m[1].trim()}`).join('\n\n')
+      : (timeComplexities.length === 1 ? `**Задача 1:** ${timeComplexities[0][1].trim()}` : "O(n) - Линейная сложность")
+
+    const spaceComplexity = spaceComplexities.length > 1
+      ? spaceComplexities.map((m, i) => `**Задача ${i + 1}:** ${m[1].trim()}`).join('\n\n')
+      : (spaceComplexities.length === 1 ? `**Задача 1:** ${spaceComplexities[0][1].trim()}` : "O(1) - Константная память")
+
+    return {
+      code,
+      thoughts: thoughts.length > 0 ? thoughts : ["Решение оптимизировано для читаемости и эффективности"],
+      time_complexity: timeComplexity,
+      space_complexity: spaceComplexity
     }
+  }
 
-    if (this.currentExtraProcessingAbortController) {
-      this.currentExtraProcessingAbortController.abort()
-      this.currentExtraProcessingAbortController = null
-      wasCancelled = true
-    }
-
-    this.deps.setHasDebugged(false)
-    this.deps.setProblemInfo(null)
-
+  /**
+   * Централизованная обработка ошибок и отправка событий
+   */
+  private handleProcessingError(error: any, errorEvent: string): void {
     const mainWindow = this.deps.getMainWindow()
-    if (wasCancelled && mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.webContents.send(this.deps.PROCESSING_EVENTS.NO_SCREENSHOTS)
+    if (!mainWindow) return
+
+    let errorMessage = error.message || "Unknown error"
+
+    if (axios.isCancel(error)) {
+      errorMessage = "Processing was canceled by the user."
+    } else if (error?.response?.status === 401) {
+      errorMessage = "Invalid API key. Please check your settings."
+    } else if (error?.response?.status === 429) {
+      errorMessage = "API rate limit exceeded. Please try again later."
+    } else if (error?.response?.status === 500) {
+      errorMessage = "Server error. Please try again later."
     }
+
+    console.error("Processing error:", error)
+    mainWindow.webContents.send(errorEvent, errorMessage)
+    mainWindow.webContents.send("processing-status", {
+      message: "Error: " + errorMessage,
+      progress: 0,
+      error: true
+    })
   }
 }

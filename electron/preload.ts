@@ -1,3 +1,4 @@
+// preload.ts
 console.log("Preload script starting...")
 import { contextBridge, ipcRenderer } from "electron"
 const { shell } = require("electron")
@@ -146,6 +147,8 @@ const electronAPI = {
       ipcRenderer.removeListener(PROCESSING_EVENTS.UNAUTHORIZED, subscription)
     }
   },
+  getProviderModels: (provider: string, apiKey?: string, baseUrl?: string) => 
+  ipcRenderer.invoke('get-provider-models', provider, apiKey, baseUrl),
   // External URL handler
   openLink: (url: string) => shell.openExternal(url),
   triggerScreenshot: () => ipcRenderer.invoke("trigger-screenshot"),
@@ -170,6 +173,7 @@ const electronAPI = {
       ipcRenderer.removeListener("subscription-portal-closed", subscription)
     }
   },
+  getAllProviders: () => ipcRenderer.invoke('get-all-providers'),
   onReset: (callback: () => void) => {
     const subscription = () => callback()
     ipcRenderer.on(PROCESSING_EVENTS.RESET, subscription)
