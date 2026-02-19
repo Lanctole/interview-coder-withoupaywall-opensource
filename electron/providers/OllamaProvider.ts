@@ -69,6 +69,7 @@ export class OllamaProvider extends BaseProvider {
  async chat(messages: Message[], model: string, options?: {
   temperature?: number;
   maxTokens?: number;
+  keepAlive?: number | string;
 }): Promise<any> {
   const ollamaMessages = [];
 
@@ -111,11 +112,14 @@ export class OllamaProvider extends BaseProvider {
     stream: false,
     options: {
       temperature: options?.temperature ?? 0.7,
-      num_predict: options?.maxTokens ?? 4096,
+      num_predict: options?.maxTokens ?? 16000,
     },
   };
 
+   requestBody.keep_alive = 0;
+
   console.log(`[Ollama] Request to ${this.baseUrl}/api/chat with model ${model}`);
+  console.log(`[Ollama] keep_alive = ${requestBody.keep_alive}`);
   const start = Date.now();
   const response = await fetch(`${this.baseUrl}/api/chat`, {
     method: 'POST',
