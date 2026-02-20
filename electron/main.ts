@@ -80,6 +80,8 @@ export interface IProcessingHelperDeps {
   setHasDebugged: (value: boolean) => void
   getHasDebugged: () => boolean
   PROCESSING_EVENTS: typeof state.PROCESSING_EVENTS
+  setExtractedContent?: (content: any) => void;
+  getExtractedContent?: () => any;
 }
 
 export interface IShortcutsHelperDeps {

@@ -38,7 +38,9 @@ export class OllamaProvider extends BaseProvider {
         const supportsVision = name.includes('vision') || 
                                name.includes('llava') || 
                                name.includes('bakllava') || 
-                               name.includes('vl');
+                               name.includes('ocr') || 
+                               name.includes('vl')||
+                               name.includes('VL');
         return {
           id: name,
           name: name,
@@ -50,7 +52,8 @@ export class OllamaProvider extends BaseProvider {
   }
 
   async supportsModelVision(modelId: string): Promise<boolean> {
-    return modelId.includes('vision') || modelId.includes('llava') || modelId.includes('bakllava');
+    return modelId.includes('vision') || modelId.includes('llava') || modelId.includes('bakllava') || modelId.includes('ocr') || 
+                               modelId.includes('vl')|| modelId.includes('V:');
   }
 
   supportsVision(): boolean {
@@ -162,5 +165,4 @@ export class OllamaProvider extends BaseProvider {
       }
     };
   }
-  
 }

@@ -1,4 +1,5 @@
 @echo off
+chcp 65001 >nul
 echo === Interview Coder - Invisible Edition (No Paywall) ===
 echo.
 echo IMPORTANT: This app is designed to be INVISIBLE by default!
